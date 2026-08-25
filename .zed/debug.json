@@ -1,0 +1,72 @@
+// Project-local debug tasks
+//
+// For more documentation on how to configure debug tasks,
+// see: https://zed.dev/docs/debugger
+[
+  {
+    "adapter": "CodeLLDB",
+    "label": "cargo run --example test",
+    "program": "$ZED_WORKTREE_ROOT/target/debug/examples/test",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "build": {
+      "label": "cargo build --example test",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--example",
+        "test"
+      ],
+      "env": {
+        "RUSTC_TOOLCHAIN": "/nix/store/g53n6976via3yyz8i3vlcqs3dscpz3rn-rust-mixed"
+      },
+      "cwd": "/home/breynard/RustProjects/hc_helper",
+      "use_new_terminal": false,
+      "allow_concurrent_runs": false,
+      "reveal": "always",
+      "reveal_target": "dock",
+      "hide": "never",
+      "tags": [],
+      "shell": "system",
+      "show_summary": false,
+      "show_command": false,
+      "save": "none",
+      "hooks": []
+    },
+    "sourceLanguages": [
+      "rust"
+    ]
+  },
+  {
+    "adapter": "CodeLLDB",
+    "label": "cargo test -p hc_helper --all-targets",
+    "build": {
+      "label": "cargo test -p hc_helper --all-targets",
+      "command": "cargo",
+      "args": [
+        "test",
+        "--package",
+        "hc_helper",
+        "--all-targets",
+        "--no-run"
+      ],
+      "env": {
+        "RUSTC_TOOLCHAIN": "/nix/store/g53n6976via3yyz8i3vlcqs3dscpz3rn-rust-mixed"
+      },
+      "cwd": "/home/breynard/RustProjects/hc_helper",
+      "use_new_terminal": false,
+      "allow_concurrent_runs": false,
+      "reveal": "always",
+      "reveal_target": "dock",
+      "hide": "never",
+      "tags": [],
+      "shell": "system",
+      "show_summary": false,
+      "show_command": false,
+      "save": "none",
+      "hooks": []
+    },
+    "sourceLanguages": [
+      "rust"
+    ]
+  }
+]
