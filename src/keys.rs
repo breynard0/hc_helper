@@ -13,3 +13,7 @@ pub fn hca_client_secret() -> String {
 pub fn hackatime_token() -> String {
     std::env::var("HACKATIME_TOKEN").unwrap_or_default().to_string()
 }
+
+pub fn base_url() -> String {
+    std::env::var("BASE_URL").unwrap_or_default().to_string()
+}

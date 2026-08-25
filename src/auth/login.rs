@@ -3,10 +3,20 @@ use std::{
     time::Instant,
 };
 
-use actix_web::{HttpRequest, HttpResponse, cookie::Cookie, web::Query};
+use actix_web::{
+    HttpRequest, HttpResponse,
+    cookie::{
+        Cookie, SameSite,
+        time::{Duration, OffsetDateTime},
+    },
+    web::Query,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::keys::{self, hca_client_id, hca_client_secret};
+use crate::{
+    client_ip, get_reqwest_client,
+    keys::{self, base_url, hca_client_id, hca_client_secret},
+};
 
 #[derive(Clone, Copy)]
 struct StateRegistryItem {
@@ -84,13 +94,13 @@ fn redirect_url(req: &HttpRequest) -> String {
     format!(
         "{}://{}/callback",
         req.connection_info().scheme(),
-        req.connection_info().host(),
+        base_url(),
     )
 }
 
 pub async fn handle_login(req: &HttpRequest, scopes: Scopes) -> actix_web::HttpResponse {
-    let host = req.connection_info().host().to_string();
-    log::info!("Beginning new login attempt from {host}");
+    let caller = client_ip(req);
+    log::info!("Beginning new login attempt from {caller}");
 
     let state_value = rand::random::<u128>();
 
@@ -114,8 +124,24 @@ pub async fn handle_login(req: &HttpRequest, scopes: Scopes) -> actix_web::HttpR
         state_value
     );
 
+    {
+        let mut registry = STATE_REGISTRY
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .unwrap_or_else(|x| x.into_inner());
+        (*registry).retain(|x| x.created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60);
+    }
+
+    let mut state_cookie = Cookie::new("state", state_value.to_string());
+    state_cookie.set_http_only(true);
+    state_cookie.set_secure(true);
+    state_cookie.set_same_site(SameSite::Lax);
+    state_cookie.set_expires(
+        OffsetDateTime::now_utc() + Duration::new(STATE_EXPIRY_TIME_MINUTES as i64 * 60, 0),
+    );
+
     actix_web::HttpResponse::Found()
-        .cookie(Cookie::new("state", state_value.to_string()))
+        .cookie(state_cookie)
         .append_header(("Location", auth_url))
         .body("redirecting to Hack Club Auth")
 }
@@ -149,8 +175,8 @@ pub async fn handle_callback(
     query: Query<CallbackArgs>,
     redirect_url_on_success: String,
 ) -> actix_web::HttpResponse {
-    let host = req.connection_info().host().to_string();
-    log::info!("Callback initiated from {host}");
+    let caller = client_ip(req);
+    log::info!("Callback initiated from {caller}");
 
     let args = query.into_inner();
 
@@ -158,12 +184,12 @@ pub async fn handle_callback(
         Some(cookie) => match cookie.value().parse::<u128>() {
             Ok(x) => x,
             Err(e) => {
-                log::error!("Invalid state cookie: {e} from {host}");
+                log::error!("Invalid state cookie: {e} from {caller}");
                 return get_login_redirect_response();
             }
         },
         None => {
-            log::error!("No state cookie from {host}");
+            log::error!("No state cookie from {caller}");
             return get_login_redirect_response();
         }
     };
@@ -172,12 +198,12 @@ pub async fn handle_callback(
         Some(x) => match x.parse::<u128>() {
             Ok(x) => x,
             Err(e) => {
-                log::error!("Invalid state in URL: {e} from {host}");
+                log::error!("Invalid state in URL: {e} from {caller}");
                 return get_login_redirect_response();
             }
         },
         None => {
-            log::error!("No state in URL from {host}");
+            log::error!("No state in URL from {caller}");
             return get_login_redirect_response();
         }
     };
@@ -189,29 +215,24 @@ pub async fn handle_callback(
             .lock()
             .unwrap_or_else(|x| x.into_inner());
 
+        (*registry).retain(|x| x.created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60);
+
         state_found = registry.iter().any(|x| x.value == state_from_cookie);
 
+        (*registry).retain(|x| x.value != state_from_cookie);
+
         if !state_found || state_from_cookie != state_from_url {
-            log::error!("State mismatch from {host}");
+            log::error!("State mismatch from {caller}");
             return get_login_redirect_response();
         }
-
-        *registry = registry
-            .iter()
-            .filter(|x| {
-                x.value != state_from_cookie
-                    && x.created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60
-            })
-            .map(|x| *x)
-            .collect::<Vec<_>>();
     }
 
-    log::info!("State matches from {host}");
+    log::info!("State matches from {caller}");
 
     let code = match args.code {
         Some(x) => x,
         None => {
-            log::error!("No code variable from {host}");
+            log::error!("No code variable from {caller}");
             return get_login_redirect_response();
         }
     };
@@ -224,9 +245,9 @@ pub async fn handle_callback(
         grant_type: "authorization_code".to_string(),
     };
 
-    let client = reqwest::Client::new();
+    let client = get_reqwest_client();
 
-    log::info!("Sending token request from {host}");
+    log::info!("Sending token request from {caller}");
 
     let response = match client
         .post("https://auth.hackclub.com/oauth/token")
@@ -235,16 +256,27 @@ pub async fn handle_callback(
         .send()
         .await
         .map_err(|e| {
-            log::error!("error: {e} from {host}");
+            log::error!("error: {e} from {caller}");
         }) {
         Ok(x) => x,
         Err(_) => return get_login_redirect_response(),
     };
 
-    let parsed: CodeRequestResponse = match response.json().await {
+    let parsed: CodeRequestResponse = match {
+        match response.error_for_status() {
+            Ok(x) => x,
+            Err(e) => {
+                log::error!("error: {e} from {caller}");
+                return get_login_redirect_response();
+            }
+        }
+    }
+    .json()
+    .await
+    {
         Ok(x) => x,
         Err(e) => {
-            log::error!("error: {e} from {host}");
+            log::error!("error: {e} from {caller}");
             return get_login_redirect_response();
         }
     };
@@ -252,15 +284,21 @@ pub async fn handle_callback(
     let token = match parsed.access_token {
         Some(x) => x,
         None => {
-            log::error!("No access token from {host}");
+            log::error!("No access token from {caller}");
             return get_login_redirect_response();
         }
     };
 
-    log::info!("Token fetch successful from {host}");
+    log::info!("Token fetch successful from {caller}");
+
+    let mut token_cookie = Cookie::new(TOKEN_COOKIE, token);
+    token_cookie.set_secure(true);
+    token_cookie.set_http_only(true);
+    token_cookie.set_same_site(SameSite::Lax);
+    token_cookie.set_expires(OffsetDateTime::now_utc() + Duration::new(60 * 60 * 24 * 5, 0));
 
     HttpResponse::Found()
-        .cookie(Cookie::new(TOKEN_COOKIE, token))
+        .cookie(token_cookie)
         .append_header(("Location", redirect_url_on_success.as_str()))
         .body("Authentication successful, redirecting...")
 }

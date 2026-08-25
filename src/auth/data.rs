@@ -4,10 +4,10 @@ use std::{
 };
 
 use actix_web::HttpRequest;
-use reqwest::Client;
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::auth::login::get_auth_token_with_handling;
+use crate::{auth::login::get_auth_token_with_handling, client_ip, get_reqwest_client};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -35,7 +35,7 @@ pub struct AuthData {
 
 impl AuthData {
     pub fn primary_address(&self) -> Option<Address> {
-        self.addresses.iter().find(|x| x.primary).map(|x| x.clone())
+        self.addresses.iter().find(|x| x.primary).cloned()
     }
 }
 
@@ -65,12 +65,12 @@ static APP_DATA_CACHE: OnceLock<Mutex<Vec<AuthDataCacheEntry>>> = OnceLock::new(
 
 const APP_DATA_EXPIRY_MINUTES: u64 = 10;
 
-pub async fn get_auth_data(req: &HttpRequest) -> Option<AuthData> {
-    let host = req.connection_info().host().to_string();
-    log::info!("Getting auth data from {host}");
-    let token = match get_auth_token_with_handling(&req) {
+pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
+    let caller = client_ip(req);
+    log::info!("Getting auth data from {caller}");
+    let token = match get_auth_token_with_handling(req) {
         Some(x) => x,
-        None => return None,
+        None => return Err(anyhow::anyhow!("No auth token")),
     };
     {
         let mut cache = APP_DATA_CACHE
@@ -84,25 +84,24 @@ pub async fn get_auth_data(req: &HttpRequest) -> Option<AuthData> {
             .collect();
 
         if let Some(cache_hit) = cache.iter().find(|e| e.token == token) {
-            log::info!("Retrieving from HCA cache from {host}");
-            return Some(cache_hit.data.clone());
+            log::info!("Retrieving from HCA cache from {caller}");
+            return Ok(cache_hit.data.clone());
         }
     }
 
-    log::info!("No HCA cache hit, fetching from {host}");
-    let client = Client::new();
+    log::info!("No HCA cache hit, fetching from {caller}");
+    let client = get_reqwest_client();
     let response = client
         .get("https://auth.hackclub.com/api/v1/me")
         .bearer_auth(&token)
         .send()
         .await;
-    let auth_data_raw = response.ok()?.error_for_status().ok()?.text().await.ok()?;
-    log::info!("{}", auth_data_raw);
-    let parsed: IdentityResponse = serde_json::from_str(&auth_data_raw).ok()?;
-    log::debug!("granted scopes: {:?} from {host}", parsed.scopes);
+    let auth_data_resp = response?.error_for_status()?;
+    let parsed: IdentityResponse = auth_data_resp.json().await?;
+    log::debug!("granted scopes: {:?} from {caller}", parsed.scopes);
     let auth_data = parsed.identity;
 
-    log::info!("HCA data successfully retrieved from {host}");
+    log::info!("HCA data successfully retrieved from {caller}");
 
     {
         let mut cache = APP_DATA_CACHE
@@ -116,7 +115,7 @@ pub async fn get_auth_data(req: &HttpRequest) -> Option<AuthData> {
         });
     }
 
-    Some(auth_data)
+    Ok(auth_data)
 }
 
 pub enum VerificationStatus {
@@ -134,16 +133,19 @@ impl VerificationStatus {
     }
 }
 
-pub async fn check_verified(req: &HttpRequest) -> Option<VerificationStatus> {
+pub async fn check_verified(req: &HttpRequest) -> Result<VerificationStatus> {
     let auth_data = get_auth_data(req).await?;
 
     match auth_data.verification_status.as_str() {
-        "needs_submission" => Some(VerificationStatus::NeedsSubmission),
-        "pending" => Some(VerificationStatus::Pending),
-        "verified_eligible" | "verified" => Some(VerificationStatus::VerifiedEligible),
-        "verified_but_over_18" => Some(VerificationStatus::VerifiedButOver18),
-        "rejected" => Some(VerificationStatus::Rejected),
-        "not_found" => Some(VerificationStatus::NotFound),
-        _ => None,
+        "needs_submission" => Ok(VerificationStatus::NeedsSubmission),
+        "pending" => Ok(VerificationStatus::Pending),
+        "verified_eligible" | "verified" => Ok(VerificationStatus::VerifiedEligible),
+        "verified_but_over_18" => Ok(VerificationStatus::VerifiedButOver18),
+        "rejected" => Ok(VerificationStatus::Rejected),
+        "not_found" => Ok(VerificationStatus::NotFound),
+        _ => Err(anyhow::anyhow!(
+            "Unknown verification status: {}",
+            auth_data.verification_status
+        )),
     }
 }
