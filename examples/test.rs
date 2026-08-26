@@ -8,6 +8,8 @@ use hc_helper::hackatime::login::{
     self as hackatime_login, CallbackArgs as HackatimeCallbackArgs, Scopes as HackatimeScopes,
 };
 use hc_helper::keys::airtable_token;
+use hc_helper::submission;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,7 +32,7 @@ function busy(){var w=el.firstElementChild;return w&&w.dataset.busy==='1'}\
 function tick(){fetch('/airtable/requests').then(function(r){return r.text()})\
 .then(function(html){el.innerHTML=html;if(busy())setTimeout(tick,1000)})}\
 if(busy())setTimeout(tick,1000)})()</script>";
-const STYLE: &str = ":root{--nord0:#2E3440;--nord1:#3B4252;--nord2:#434C5E;--nord3:#4C566A;--nord4:#D8DEE9;--nord6:#ECEFF4;--nord8:#88C0D0;--nord9:#81A1C1;--nord10:#5E81AC;--muted:#616E88}html{background:var(--nord0)}body{font:15px/1.5 system-ui,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem;background:var(--nord0);color:var(--nord4)}h1,h2,h3{color:var(--nord6);font-weight:600}h1{border-bottom:1px solid var(--nord3);padding-bottom:.5rem}table{border-collapse:collapse;width:100%;margin-bottom:1.5rem;border:1px solid var(--nord3);border-radius:.3rem;overflow:hidden}th,td{border:1px solid var(--nord3);padding:.4rem .6rem;text-align:left;vertical-align:top}th{width:14rem;background:var(--nord1);color:var(--nord9);font-family:ui-monospace,monospace;font-weight:600}td{background:var(--nord0);color:var(--nord4);font-family:ui-monospace,monospace;word-break:break-word}tr:nth-child(even) td{background:#333A47}em{color:var(--muted);font-style:italic}code{color:var(--nord8);font-family:ui-monospace,monospace}a.button{display:inline-block;background:var(--nord10);color:var(--nord6);text-decoration:none;padding:.7rem 1.4rem;border-radius:.4rem;font-weight:600}a.button:hover{background:var(--nord9)}nav{display:flex;gap:.5rem;margin-bottom:1.5rem}a.tab{padding:.5rem 1rem;border-radius:.4rem;text-decoration:none;background:var(--nord1);color:var(--nord9);font-weight:600}a.tab.active{background:var(--nord10);color:var(--nord6)}form{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}input{font:15px/1.5 ui-monospace,monospace;padding:.6rem;min-width:18rem;border:1px solid var(--nord3);border-radius:.4rem;background:var(--nord1);color:var(--nord4)}button{font:15px/1.5 system-ui,sans-serif;font-weight:600;padding:.6rem 1.2rem;border:0;border-radius:.4rem;background:var(--nord10);color:var(--nord6);cursor:pointer}button:hover{background:var(--nord9)}ul{padding-left:1.2rem}li{font-family:ui-monospace,monospace;margin-bottom:.2rem}";
+const STYLE: &str = ":root{--nord0:#2E3440;--nord1:#3B4252;--nord2:#434C5E;--nord3:#4C566A;--nord4:#D8DEE9;--nord6:#ECEFF4;--nord8:#88C0D0;--nord9:#81A1C1;--nord10:#5E81AC;--muted:#616E88}html{background:var(--nord0)}body{font:15px/1.5 system-ui,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem;background:var(--nord0);color:var(--nord4)}h1,h2,h3{color:var(--nord6);font-weight:600}h1{border-bottom:1px solid var(--nord3);padding-bottom:.5rem}table{border-collapse:collapse;width:100%;margin-bottom:1.5rem;border:1px solid var(--nord3);border-radius:.3rem;overflow:hidden}th,td{border:1px solid var(--nord3);padding:.4rem .6rem;text-align:left;vertical-align:top}th{width:14rem;background:var(--nord1);color:var(--nord9);font-family:ui-monospace,monospace;font-weight:600}td{background:var(--nord0);color:var(--nord4);font-family:ui-monospace,monospace;word-break:break-word}tr:nth-child(even) td{background:#333A47}em{color:var(--muted);font-style:italic}code{color:var(--nord8);font-family:ui-monospace,monospace}a.button{display:inline-block;background:var(--nord10);color:var(--nord6);text-decoration:none;padding:.7rem 1.4rem;border-radius:.4rem;font-weight:600}a.button:hover{background:var(--nord9)}nav{display:flex;gap:.5rem;margin-bottom:1.5rem}a.tab{padding:.5rem 1rem;border-radius:.4rem;text-decoration:none;background:var(--nord1);color:var(--nord9);font-weight:600}a.tab.active{background:var(--nord10);color:var(--nord6)}form{display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1.5rem}input{font:15px/1.5 ui-monospace,monospace;padding:.6rem;min-width:18rem;border:1px solid var(--nord3);border-radius:.4rem;background:var(--nord1);color:var(--nord4)}button{font:15px/1.5 system-ui,sans-serif;font-weight:600;padding:.6rem 1.2rem;border:0;border-radius:.4rem;background:var(--nord10);color:var(--nord6);cursor:pointer}button:hover{background:var(--nord9)}ul{padding-left:1.2rem}li{font-family:ui-monospace,monospace;margin-bottom:.2rem}li a{color:var(--nord8)}";
 
 fn escape(v: &str) -> String {
     v.replace('&', "&amp;")
@@ -74,6 +76,7 @@ fn page(body: &str, active: &str) -> HttpResponse {
         ("/", "auth"),
         ("/hackatime", "hackatime"),
         ("/airtable", "airtable"),
+        ("/submission", "submission"),
     ]
     .iter()
     .map(|(href, label)| {
@@ -199,6 +202,11 @@ async fn index(req: HttpRequest) -> HttpResponse {
     page(&data_page(&data, verified.as_ref().ok()), "/")
 }
 
+#[derive(Deserialize)]
+struct ProjectQuery {
+    project: Option<String>,
+}
+
 fn project_table(heading: &str, p: &Project) -> String {
     section(
         heading,
@@ -208,17 +216,39 @@ fn project_table(heading: &str, p: &Project) -> String {
                 "total_duration_seconds",
                 &p.total_duration_seconds.to_string(),
             ),
+            ("total_heartbeats", &p.total_heartbeats.to_string()),
+            ("languages", &p.languages.join(", ")),
+            ("repo_url", p.repo_url.as_deref().unwrap_or_default()),
+            (
+                "first_heartbeat",
+                p.first_heartbeat.as_deref().unwrap_or_default(),
+            ),
+            (
+                "last_heartbeat",
+                p.last_heartbeat.as_deref().unwrap_or_default(),
+            ),
             (
                 "most_recent_heartbeat",
                 p.most_recent_heartbeat.as_deref().unwrap_or_default(),
             ),
-            ("languages", &p.languages.join(", ")),
             ("archived", &p.archived.to_string()),
         ],
     )
 }
 
-fn user_page(user: &HackatimeUser, projects: &[Project]) -> String {
+/// Percent-encoded, so projects with a space or an `&` in the name still link correctly.
+fn project_href(name: &str) -> String {
+    let mut url = Url::parse("http://localhost/hackatime").expect("static url");
+    url.query_pairs_mut().append_pair("project", name);
+    format!("/hackatime?{}", url.query().unwrap_or_default())
+}
+
+fn user_page(
+    user: &HackatimeUser,
+    names: &[String],
+    selected: Option<&str>,
+    details: &str,
+) -> String {
     let rows = table(&[
         ("user_id", &user.user_id.to_string()),
         ("emails", &user.emails.join(", ")),
@@ -234,16 +264,30 @@ fn user_page(user: &HackatimeUser, projects: &[Project]) -> String {
         ),
     ]);
 
-    let projects = if projects.is_empty() {
+    let projects = if names.is_empty() {
         "<h3>projects</h3><p><em>none returned</em></p>".to_string()
     } else {
-        indexed("projects", projects, project_table)
+        let items = names
+            .iter()
+            .map(|n| {
+                let label = escape(n);
+                let label = if Some(n.as_str()) == selected {
+                    format!("<strong>{label}</strong>")
+                } else {
+                    label
+                };
+                format!("<li><a href=\"{}\">{label}</a></li>", project_href(n))
+            })
+            .collect::<String>();
+        format!("<h3>projects</h3><ul>{items}</ul>")
     };
 
-    format!("<h2>HackatimeUser</h2>{rows}{projects}")
+    format!("<h2>HackatimeUser</h2>{rows}{projects}{details}")
 }
 
-async fn hackatime_page(req: HttpRequest) -> HttpResponse {
+/// Details are fetched for the clicked project only — fetching every project on load meant one
+/// request per project every time the tab was opened.
+async fn hackatime_page(req: HttpRequest, query: Query<ProjectQuery>) -> HttpResponse {
     if hackatime_login::get_hackatime_token_with_handling(&req).is_none() {
         return page(HACKATIME_LOGIN_BUTTON, "/hackatime");
     }
@@ -260,19 +304,31 @@ async fn hackatime_page(req: HttpRequest) -> HttpResponse {
         }
     };
 
-    let projects = match hackatime::get_hackatime_projects(&req).await {
-        Ok(projects) => projects,
+    let names = match hackatime::get_hackatime_projects(&req).await {
+        Ok(names) => names,
         Err(e) => {
             let body = format!(
                 "{}{}",
-                user_page(&user, &[]),
+                user_page(&user, &[], None, ""),
                 table(&[("get_hackatime_projects error", &e.to_string())])
             );
             return page(&body, "/hackatime");
         }
     };
 
-    page(&user_page(&user, &projects), "/hackatime")
+    let selected = query.into_inner().project;
+    let details = match &selected {
+        Some(name) => match hackatime::get_hackatime_project(&req, name).await {
+            Ok(project) => project_table("project", &project),
+            Err(e) => table(&[("get_hackatime_project error", &e.to_string())]),
+        },
+        None => String::new(),
+    };
+
+    page(
+        &user_page(&user, &names, selected.as_deref(), &details),
+        "/hackatime",
+    )
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -401,12 +457,12 @@ fn button(action: &str, label: &str) -> String {
     format!("<button name=\"action\" value=\"{action}\" type=\"submit\">{label}</button>")
 }
 
-fn form(fields: &[(&str, &str, &str)], buttons: &str) -> String {
+fn form(action: &str, fields: &[(&str, &str, &str)], buttons: &str) -> String {
     let inputs = fields
         .iter()
         .map(|(n, p, v)| input(n, p, v))
         .collect::<String>();
-    format!("<form method=\"post\" action=\"/airtable\">{inputs}{buttons}</form>")
+    format!("<form method=\"post\" action=\"{action}\">{inputs}{buttons}</form>")
 }
 
 async fn find_result(a: &AirtableArgs) -> String {
@@ -535,9 +591,8 @@ fn launch_find(a: &AirtableArgs) {
 }
 
 /// The same GET `find_records` builds, sent straight through reqwest. This skips the airtable
-/// queue handler — which awaits each request before taking the next off the channel, so it can
-/// never put more than one request in flight — and keeps the response status, which
-/// `find_records` discards by calling `response.json()` first.
+/// queue handler, so it is subject to neither the 4/s per-base gate nor the automatic 429 retry:
+/// a rate limit is reported as it arrives instead of being absorbed and retried.
 fn launch_probe(a: &AirtableArgs) {
     let id = start_attempt("direct");
 
@@ -650,13 +705,6 @@ fn is_rate_limited(message: &str) -> bool {
     .any(|needle| message.contains(needle))
 }
 
-/// `find_records` decodes the body before checking the status, so an error response reaches us
-/// as a missing-`records` decode failure with no status attached. Airtable returns that shape
-/// for a 429, so these are rate limits that could not be confirmed as such.
-fn is_error_body(message: &str) -> bool {
-    message.contains("missing field `records`")
-}
-
 /// Events over the span they happened in. `n` events between the first and the last are `n - 1`
 /// intervals, so dividing by `n` reports a rate a burst never actually sustained.
 #[derive(Default)]
@@ -693,7 +741,7 @@ fn attempts_section() -> (String, usize) {
         return ("<p><em>no requests yet</em></p>".to_string(), 0);
     }
 
-    let (mut ongoing, mut ok, mut errors, mut limited, mut suspected) = (0, 0, 0, 0, 0);
+    let (mut ongoing, mut ok, mut errors, mut limited) = (0, 0, 0, 0);
     // Sends and arrivals are separate timelines: mixing them is what makes a serialized queue
     // look like it beat a rate limit it never reached.
     let (mut sent, mut arrived, mut accepted, mut rejected) = (
@@ -757,12 +805,6 @@ fn attempts_section() -> (String, usize) {
                         rejected.add(at);
                     }
                     ("<strong>RATE LIMITED</strong>", e.clone())
-                } else if is_error_body(e) {
-                    suspected += 1;
-                    if let Some(at) = done_at {
-                        rejected.add(at);
-                    }
-                    ("<strong>RATE LIMITED?</strong>", e.clone())
                 } else {
                     ("error", e.clone())
                 }
@@ -808,14 +850,6 @@ fn attempts_section() -> (String, usize) {
             ),
             &limited.to_string(),
         ),
-        (
-            loud(
-                "RATE LIMITED? (no status)",
-                "rate limited? (no status)",
-                suspected,
-            ),
-            &suspected.to_string(),
-        ),
     ]);
 
     let breakdown = if by_error.is_empty() {
@@ -826,8 +860,6 @@ fn attempts_section() -> (String, usize) {
             .map(|(message, count)| {
                 let tag = if is_rate_limited(message) {
                     "<strong>RATE LIMITED</strong>"
-                } else if is_error_body(message) {
-                    "<strong>RATE LIMITED?</strong>"
                 } else {
                     "error"
                 };
@@ -840,27 +872,17 @@ fn attempts_section() -> (String, usize) {
         format!("<table><tr><th>count</th><th>kind</th><th>message</th></tr>{rows}</table>")
     };
 
-    let note = if suspected > 0 {
-        "<p><em><strong>RATE LIMITED?</strong> means Airtable returned an error body instead of \
-         records (the shape it uses for a 429), but the status was lost: \
-         <code>find_records</code> calls <code>response.json()</code> before \
-         <code>error_for_status()</code>. Run <strong>probe rate limit</strong> to send the same \
-         query outside the queue and read the real status code.</em></p>"
-    } else {
-        ""
-    };
-
     let queue_note = "<p><em><code>spam find_records</code> is capped by the client, not by \
-         Airtable: the queue handler awaits each request before taking the next off the channel, \
-         so exactly one request is ever in flight and the rate cannot exceed 1/RTT whatever \
-         <code>count</code> and <code>seconds</code> say. Rejections come back faster than real \
-         queries, so counting them as throughput pushes that figure above the limit. \
+         Airtable: the queue handler dispatches each request concurrently but admits at most \
+         4/second per base, so the offered rate is held at that gate however high \
+         <code>count</code> and <code>seconds</code> go. A 429 that slips past it is retried \
+         inside the handler, so it shows up here as a slower request rather than an error. \
          <strong>probe rate limit</strong> bypasses the queue, so <em>sent/second</em> is the \
          rate offered and <em>accepted/second</em> is what Airtable let through.</em></p>";
 
     let plot = attempts_plot(&attempts);
     let body = format!(
-        "{summary}{plot}{breakdown}{note}{queue_note}\
+        "{summary}{plot}{breakdown}{queue_note}\
          <div style=\"display:flex;gap:1rem;align-items:flex-start\">\
          <div style=\"flex:1;min-width:0\"><h3>ongoing</h3>\
          <table><tr><th>#</th><th>via</th><th>ms</th></tr>{ongoing_rows}</table></div>\
@@ -1155,6 +1177,7 @@ fn render_airtable() -> HttpResponse {
     let a = &state.args;
 
     let find_form = form(
+        "/airtable",
         &[
             ("base", "base id", &a.base),
             ("table", "table id or name", &a.table),
@@ -1172,6 +1195,7 @@ fn render_airtable() -> HttpResponse {
     );
 
     let upsert_form = form(
+        "/airtable",
         &[
             ("base", "base id", &a.base),
             ("table", "table id or name", &a.table),
@@ -1197,6 +1221,7 @@ fn render_airtable() -> HttpResponse {
     );
 
     let controls = form(
+        "/airtable",
         &[],
         &format!(
             "{}{}",
@@ -1215,6 +1240,156 @@ fn render_airtable() -> HttpResponse {
             requests_fragment()
         ),
         "/airtable",
+    )
+}
+
+#[derive(Deserialize, Clone)]
+#[serde(default)]
+struct SubmissionArgs {
+    base: String,
+    table: String,
+    code_url: String,
+    playable_url: String,
+    screenshot_url: String,
+    description: String,
+    hackatime_projects: String,
+    slack_username: String,
+}
+
+impl Default for SubmissionArgs {
+    fn default() -> Self {
+        Self {
+            base: AIRTABLE_BASE_ID.to_string(),
+            table: AIRTABLE_TABLE.to_string(),
+            code_url: "https://example.com/john-hack-club/tale".to_string(),
+            playable_url: "https://example.com/john-hack-club/tale/releases/v1.0.0".to_string(),
+            screenshot_url: "https://example.com/john-hack-club/tale/screenshot.png".to_string(),
+            description: "John Hack Club wrote a tale that compiles, which is more than \
+                          most tales manage."
+                .to_string(),
+            hackatime_projects: String::new(),
+            slack_username: "johnhackclub".to_string(),
+        }
+    }
+}
+
+impl SubmissionArgs {
+    fn project_names(&self) -> Vec<String> {
+        self.hackatime_projects
+            .split(',')
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .collect()
+    }
+
+    fn target(&self) -> Result<AirtableTable, String> {
+        if self.base.is_empty() || self.table.is_empty() {
+            return Err(table(&[("error", "base id and table are required")]));
+        }
+        Ok(AirtableTable {
+            base_id: self.base.clone(),
+            table_id_or_name: self.table.clone(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct SubmissionPageState {
+    args: SubmissionArgs,
+    out: String,
+}
+
+static SUBMISSION_PAGE: LazyLock<Mutex<SubmissionPageState>> =
+    LazyLock::new(|| Mutex::new(SubmissionPageState::default()));
+
+#[derive(Serialize)]
+struct AdditionalFields {
+    #[serde(rename = "Slack Username")]
+    slack_username: String,
+}
+
+async fn push_result(req: &HttpRequest, a: &SubmissionArgs) -> String {
+    let target = match a.target() {
+        Ok(target) => target,
+        Err(e) => return e,
+    };
+
+    match submission::push_unified(
+        req,
+        target,
+        a.code_url.clone(),
+        a.playable_url.clone(),
+        a.screenshot_url.clone(),
+        a.description.clone(),
+        a.project_names(),
+        AdditionalFields {
+            slack_username: a.slack_username.clone(),
+        },
+    )
+    .await
+    {
+        Ok(()) => table(&[
+            ("push_unified", "ok"),
+            ("projects sent", &a.project_names().join(", ")),
+        ]),
+        Err(e) => table(&[("push_unified error", &format!("{e:#}"))]),
+    }
+}
+
+async fn submission_get(req: HttpRequest) -> HttpResponse {
+    render_submission(&missing_logins(&req))
+}
+
+/// `push_unified` reads both the Hack Club and the Hackatime cookie, so the tab is useless
+/// without either.
+fn missing_logins(req: &HttpRequest) -> String {
+    let mut out = String::new();
+    if login::get_auth_token_with_handling(req).is_none() {
+        out.push_str(LOGIN_BUTTON);
+    }
+    if hackatime_login::get_hackatime_token_with_handling(req).is_none() {
+        out.push_str(HACKATIME_LOGIN_BUTTON);
+    }
+    out
+}
+
+async fn submission_post(req: HttpRequest, form: web::Form<SubmissionArgs>) -> HttpResponse {
+    let args = form.into_inner();
+    let out = push_result(&req, &args).await;
+
+    *SUBMISSION_PAGE.lock().unwrap() = SubmissionPageState { args, out };
+
+    HttpResponse::SeeOther()
+        .insert_header(("Location", "/submission"))
+        .finish()
+}
+
+fn render_submission(logins: &str) -> HttpResponse {
+    let state = SUBMISSION_PAGE.lock().unwrap();
+    let a = &state.args;
+
+    let push_form = form(
+        "/submission",
+        &[
+            ("base", "base id", &a.base),
+            ("table", "table id or name", &a.table),
+            ("code_url", "Code URL", &a.code_url),
+            ("playable_url", "Playable URL", &a.playable_url),
+            ("screenshot_url", "Screenshot", &a.screenshot_url),
+            ("description", "Description", &a.description),
+            (
+                "hackatime_projects",
+                "Hackatime project names (comma separated)",
+                &a.hackatime_projects,
+            ),
+            ("slack_username", "Slack Username", &a.slack_username),
+        ],
+        &button("push", "push_unified"),
+    );
+
+    page(
+        &format!("{logins}<h2>push_unified</h2>{push_form}{}", state.out),
+        "/submission",
     )
 }
 
@@ -1256,6 +1431,8 @@ async fn main() -> std::io::Result<()> {
             .route("/airtable", web::get().to(airtable_get))
             .route("/airtable/requests", web::get().to(airtable_requests))
             .route("/airtable", web::post().to(airtable_post))
+            .route("/submission", web::get().to(submission_get))
+            .route("/submission", web::post().to(submission_post))
             .route("/login", web::get().to(login))
             .route("/callback", web::get().to(callback))
             .route("/hackatime/login", web::get().to(hackatime_login))

@@ -6,6 +6,7 @@ pub mod airtable;
 pub mod auth;
 pub mod hackatime;
 pub mod keys;
+pub mod submission;
 
 static REQWEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 

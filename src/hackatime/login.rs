@@ -276,6 +276,7 @@ pub async fn handle_callback(
     token_cookie.set_secure(true);
     token_cookie.set_http_only(true);
     token_cookie.set_same_site(SameSite::Lax);
+    token_cookie.set_path("/");
     token_cookie.set_expires(OffsetDateTime::now_utc() + Duration::new(60 * 60 * 24 * 5, 0));
 
     HttpResponse::Found()
