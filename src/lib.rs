@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use actix_web::HttpRequest;
 
+pub mod airtable;
 pub mod auth;
 pub mod hackatime;
 pub mod keys;
