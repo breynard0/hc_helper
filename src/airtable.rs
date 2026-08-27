@@ -1,11 +1,16 @@
 use std::{
+    str::FromStr,
     sync::OnceLock,
     time::{Duration, Instant},
 };
 
+use actix_web::http::header::HttpDate;
 use anyhow::{Result, anyhow};
 use log::{error, info};
-use reqwest::{Body, Method, Request, Response, StatusCode, Url, header::HeaderValue};
+use reqwest::{
+    Body, Method, Request, Response, StatusCode, Url,
+    header::{HeaderName, HeaderValue},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     sync::{
@@ -51,6 +56,7 @@ struct AirtableRequest {
     table: AirtableTable,
     req: Request,
     res: oneshot::Sender<Result<Response>>,
+    rate_limited_count: u32,
 }
 
 static QUEUE_HANDLER_TX: OnceLock<Sender<AirtableRequest>> = OnceLock::new();
@@ -97,6 +103,16 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
 
             let duplicated_request_for_retry = req.req.try_clone();
             let duplicated_table_for_retry = req.table.clone();
+            let num_rate_limited = req.rate_limited_count;
+            if num_rate_limited > 10 {
+                error!(
+                    "A very patient HTTP request has just hit ten rate limit retries. It will rest now."
+                );
+                req.res
+                    .send(Err(anyhow::anyhow!("Rate limit retries exceeded")))
+                    .ok();
+                continue;
+            }
 
             request_instances.push(RequestInstance {
                 airtable_base_id: req.table.base_id,
@@ -109,10 +125,44 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
                 if let Ok(resp) = response_result {
                     response_result = match resp.status() == StatusCode::TOO_MANY_REQUESTS {
                         true => {
-                            sleep(Duration::from_secs(1)).await;
                             if let Some(req_handle) = duplicated_request_for_retry {
-                                enqueue_airtable_request(req_handle, duplicated_table_for_retry)
-                                    .await
+                                let backoff_time_default = 2_u64.pow(num_rate_limited).min(5 * 60);
+                                let sleep_time = match resp
+                                    .headers()
+                                    .get(HeaderName::from_static("retry-after"))
+                                {
+                                    Some(x) => match x.to_str() {
+                                        Ok(x) => match x.parse::<u64>() {
+                                            Ok(x) => x,
+                                            Err(_) => match HttpDate::from_str(x) {
+                                                Ok(date) => {
+                                                    let sys_time: std::time::SystemTime =
+                                                        date.into();
+                                                    let duration =
+                                                        sys_time
+                                                            .duration_since(
+                                                                std::time::SystemTime::now(),
+                                                            )
+                                                            .unwrap_or_default();
+                                                    match duration.as_secs() {
+                                                        0 => backoff_time_default,
+                                                        _ => duration.as_secs(),
+                                                    }
+                                                }
+                                                Err(_) => backoff_time_default,
+                                            },
+                                        },
+                                        Err(_) => backoff_time_default,
+                                    },
+                                    None => backoff_time_default,
+                                };
+                                sleep(Duration::from_secs(sleep_time)).await;
+                                enqueue_airtable_request(
+                                    req_handle,
+                                    duplicated_table_for_retry,
+                                    num_rate_limited + 1,
+                                )
+                                .await
                             } else {
                                 Err(anyhow::anyhow!(
                                     "Failed to clone request after Airtable returned a 429"
@@ -141,7 +191,11 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
     Ok(())
 }
 
-async fn enqueue_airtable_request(request: Request, table: AirtableTable) -> Result<Response> {
+async fn enqueue_airtable_request(
+    request: Request,
+    table: AirtableTable,
+    rate_limited_count: u32,
+) -> Result<Response> {
     match QUEUE_HANDLER_TX.get() {
         Some(handle) => {
             let (sender, receiver) = oneshot::channel();
@@ -150,6 +204,7 @@ async fn enqueue_airtable_request(request: Request, table: AirtableTable) -> Res
                     table,
                     req: request,
                     res: sender,
+                    rate_limited_count,
                 })
                 .await?;
             match receiver.await {
@@ -230,7 +285,7 @@ where
         let body_mut = request.body_mut();
         *body_mut = Some(Body::from(body_parsed));
 
-        enqueue_airtable_request(request, table.clone()).await?;
+        enqueue_airtable_request(request, table.clone(), 0).await?;
     }
 
     Ok(())
@@ -293,7 +348,7 @@ where
             .headers_mut()
             .append("Authorization", auth_header_value);
 
-        let response = enqueue_airtable_request(request, table.clone()).await?;
+        let response = enqueue_airtable_request(request, table.clone(), 0).await?;
 
         let parsed: FindRecordsTopLevel<T> = response.json().await?;
 
