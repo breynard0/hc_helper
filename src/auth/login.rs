@@ -51,12 +51,6 @@ pub fn get_login_redirect_response() -> HttpResponse {
         .finish()
 }
 
-/// Returns HCA token for if it gets stashed somewhere else
-pub fn get_hca_token(req: &HttpRequest) -> String {
-    let token = req.cookie(TOKEN_COOKIE).map(|x| x.value().to_string());
-    token.unwrap_or_default()
-}
-
 pub struct Scopes {
     pub openid: bool,
     pub profile: bool,
