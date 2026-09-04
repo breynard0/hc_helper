@@ -14,7 +14,7 @@ use actix_web::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    client_ip, get_reqwest_client,
+    client_ip,
     keys::{self, hca_client_id, hca_client_secret},
 };
 
@@ -245,7 +245,7 @@ pub async fn handle_callback(
         grant_type: "authorization_code".to_string(),
     };
 
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
 
     log::info!("Sending token request from {caller}");
 

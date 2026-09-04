@@ -8,7 +8,7 @@ use anyhow::Result;
 use log::error;
 use serde::{Deserialize, Serialize};
 
-use crate::{client_ip, get_reqwest_client, hackatime::login::get_hackatime_token_with_handling};
+use crate::{client_ip, hackatime::login::get_hackatime_token_with_handling};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -117,7 +117,7 @@ pub async fn get_hackatime_user(req: &HttpRequest) -> Result<HackatimeUser> {
 
     log::info!("No Hackatime user cache hit, fetching from {caller}");
 
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
     let response = client
         .get("https://hackatime.hackclub.com/api/v1/authenticated/me")
         .bearer_auth(&token)
@@ -162,7 +162,7 @@ pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
 
     log::info!("No Hackatime project names cache hit, fetching from {caller}");
 
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
     let response = client
         .get("https://hackatime.hackclub.com/api/v1/authenticated/projects?include_archived=true")
         .bearer_auth(&token)
@@ -215,7 +215,7 @@ pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Proj
     url.query_pairs_mut()
         .append_pair("start_date", PROJECT_STATS_START);
 
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
     let response = client.get(url).bearer_auth(&token).send().await;
     let parsed: Project = response?.error_for_status()?.json().await?;
 

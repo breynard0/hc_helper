@@ -2,7 +2,6 @@ use actix_web::{App, HttpRequest, HttpResponse, HttpServer, web, web::Query};
 use hc_helper::airtable::{self, AirtableTable};
 use hc_helper::auth::data::{self, Address, AuthData, VerificationStatus};
 use hc_helper::auth::login::{self, CallbackArgs, Scopes};
-use hc_helper::get_reqwest_client;
 use hc_helper::hackatime::data::{self as hackatime, HackatimeUser, Project};
 use hc_helper::hackatime::login::{
     self as hackatime_login, CallbackArgs as HackatimeCallbackArgs, Scopes as HackatimeScopes,
@@ -605,7 +604,7 @@ fn launch_probe(a: &AirtableArgs) {
     let filter = format!("{{{}}}='{}-{id}'", a.field, a.value);
 
     actix_web::rt::spawn(async move {
-        let sent = get_reqwest_client()
+        let sent = reqwest::Client::new()
             .get(&url)
             .query(&[("filterByFormula", &filter)])
             .bearer_auth(airtable_token())

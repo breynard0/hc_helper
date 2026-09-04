@@ -7,7 +7,7 @@ use actix_web::HttpRequest;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::login::get_auth_token_with_handling, client_ip, get_reqwest_client};
+use crate::{auth::login::get_auth_token_with_handling, client_ip};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -90,7 +90,7 @@ pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
     }
 
     log::info!("No HCA cache hit, fetching from {caller}");
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
     let response = client
         .get("https://auth.hackclub.com/api/v1/me")
         .bearer_auth(&token)

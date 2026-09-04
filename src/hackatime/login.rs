@@ -14,7 +14,7 @@ use actix_web::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    client_ip, get_reqwest_client,
+    client_ip,
     keys::{self, hackatime_client_id, hackatime_client_secret},
 };
 
@@ -223,7 +223,7 @@ pub async fn handle_callback(
         grant_type: "authorization_code".to_string(),
     };
 
-    let client = get_reqwest_client();
+    let client = reqwest::Client::new();
 
     log::info!("Sending Hackatime token request from {caller}");
 

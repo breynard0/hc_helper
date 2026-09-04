@@ -20,7 +20,7 @@ use tokio::{
     time::sleep,
 };
 
-use crate::{get_reqwest_client, keys::airtable_token};
+use crate::keys::airtable_token;
 
 #[derive(Clone)]
 pub struct AirtableTable {
@@ -69,8 +69,6 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
         .map_err(|_| anyhow!("error setting tx"))?;
 
     tokio::spawn(async move {
-        let client = get_reqwest_client();
-
         struct RequestInstance {
             airtable_base_id: String,
             instant: Instant,
@@ -120,6 +118,7 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
             });
 
             tokio::spawn(async move {
+                let client = reqwest::Client::new();
                 let mut response_result: Result<Response, anyhow::Error> =
                     client.execute(req.req).await.map_err(|e| e.into());
                 if let Ok(resp) = response_result {
