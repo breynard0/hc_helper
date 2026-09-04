@@ -43,10 +43,18 @@ macro_rules! get_auth_token {
     };
 }
 
+
+/// Get the redirect to the /login page
 pub fn get_login_redirect_response() -> HttpResponse {
     HttpResponse::Found()
         .append_header(("Location", "/login"))
         .finish()
+}
+
+/// Returns HCA token for if it gets stashed somewhere else
+pub fn get_hca_token(req: &HttpRequest) -> String {
+    let token = req.cookie(TOKEN_COOKIE).map(|x| x.value().to_string());
+    token.unwrap_or_default()
 }
 
 pub struct Scopes {
@@ -98,6 +106,7 @@ fn redirect_url(req: &HttpRequest) -> String {
     )
 }
 
+/// should be placed at /login, saves state cookie and redirects to HCA redirect URL
 pub async fn handle_login(req: &HttpRequest, scopes: Scopes) -> actix_web::HttpResponse {
     let caller = client_ip(req);
     log::info!("Beginning new login attempt from {caller}");
@@ -170,6 +179,7 @@ pub struct CodeRequestResponse {
     pub refresh_token: Option<String>,
 }
 
+/// should be placed at /callback, validates response and saves token cookie
 pub async fn handle_callback(
     req: &HttpRequest,
     query: Query<CallbackArgs>,
