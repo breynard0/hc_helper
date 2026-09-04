@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     client_ip, get_reqwest_client,
-    keys::{self, base_url, hca_client_id, hca_client_secret},
+    keys::{self, hca_client_id, hca_client_secret},
 };
 
 #[derive(Clone, Copy)]
@@ -42,7 +42,6 @@ macro_rules! get_auth_token {
         }
     };
 }
-
 
 /// Get the redirect to the /login page
 pub fn get_login_redirect_response() -> HttpResponse {
@@ -92,16 +91,12 @@ fn scopes_to_string(scopes: Scopes) -> String {
     out
 }
 
-fn redirect_url(req: &HttpRequest) -> String {
-    format!(
-        "{}://{}/callback",
-        req.connection_info().scheme(),
-        base_url(),
-    )
-}
-
 /// should be placed at /login, saves state cookie and redirects to HCA redirect URL
-pub async fn handle_login(req: &HttpRequest, scopes: Scopes) -> actix_web::HttpResponse {
+pub async fn handle_login(
+    req: &HttpRequest,
+    scopes: Scopes,
+    callback_redirect_url: String,
+) -> actix_web::HttpResponse {
     let caller = client_ip(req);
     log::info!("Beginning new login attempt from {caller}");
 
@@ -122,7 +117,7 @@ pub async fn handle_login(req: &HttpRequest, scopes: Scopes) -> actix_web::HttpR
     let auth_url = format!(
         "https://auth.hackclub.com/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}",
         keys::hca_client_id(),
-        redirect_url(req),
+        callback_redirect_url,
         scopes_to_string(scopes),
         state_value
     );
@@ -177,6 +172,7 @@ pub struct CodeRequestResponse {
 pub async fn handle_callback(
     req: &HttpRequest,
     query: Query<CallbackArgs>,
+    callback_redirect_url: String,
     redirect_url_on_success: String,
 ) -> actix_web::HttpResponse {
     let caller = client_ip(req);
@@ -244,7 +240,7 @@ pub async fn handle_callback(
     let body = CodeRequestBody {
         client_id: hca_client_id(),
         client_secret: hca_client_secret(),
-        redirect_uri: redirect_url(req),
+        redirect_uri: callback_redirect_url,
         code,
         grant_type: "authorization_code".to_string(),
     };

@@ -1393,20 +1393,32 @@ fn render_submission(logins: &str) -> HttpResponse {
     )
 }
 
+fn callback_redirect_url(req: &HttpRequest, path: &str) -> String {
+    format!(
+        "{}://{}{path}",
+        req.connection_info().scheme(),
+        hc_helper::keys::base_url(),
+    )
+}
+
 async fn login(req: HttpRequest) -> HttpResponse {
-    login::handle_login(&req, all_scopes()).await
+    let redirect_url = callback_redirect_url(&req, "/callback");
+    login::handle_login(&req, all_scopes(), redirect_url).await
 }
 
 async fn callback(req: HttpRequest, query: Query<CallbackArgs>) -> HttpResponse {
-    login::handle_callback(&req, query, "/".to_string()).await
+    let redirect_url = callback_redirect_url(&req, "/callback");
+    login::handle_callback(&req, query, redirect_url, "/".to_string()).await
 }
 
 async fn hackatime_login(req: HttpRequest) -> HttpResponse {
-    hackatime_login::handle_login(&req, all_hackatime_scopes()).await
+    let redirect_url = callback_redirect_url(&req, "/hackatime/callback");
+    hackatime_login::handle_login(&req, all_hackatime_scopes(), redirect_url).await
 }
 
 async fn hackatime_callback(req: HttpRequest, query: Query<HackatimeCallbackArgs>) -> HttpResponse {
-    hackatime_login::handle_callback(&req, query, "/hackatime".to_string()).await
+    let redirect_url = callback_redirect_url(&req, "/hackatime/callback");
+    hackatime_login::handle_callback(&req, query, redirect_url, "/hackatime".to_string()).await
 }
 
 #[actix_web::main]
