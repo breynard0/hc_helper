@@ -75,6 +75,7 @@ pub async fn handle_login(
     req: &HttpRequest,
     scopes: Scopes,
     callback_redirect_url: String,
+    http_only: bool
 ) -> actix_web::HttpResponse {
     let caller = client_ip(req);
     log::info!("Beginning new Hackatime login attempt from {caller}");
@@ -110,7 +111,7 @@ pub async fn handle_login(
     }
 
     let mut state_cookie = Cookie::new(STATE_COOKIE, state_value.to_string());
-    state_cookie.set_http_only(true);
+    state_cookie.set_http_only(http_only);
     state_cookie.set_secure(true);
     state_cookie.set_same_site(SameSite::Lax);
     state_cookie.set_expires(

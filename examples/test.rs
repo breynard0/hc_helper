@@ -1412,7 +1412,7 @@ async fn callback(req: HttpRequest, query: Query<CallbackArgs>) -> HttpResponse 
 
 async fn hackatime_login(req: HttpRequest) -> HttpResponse {
     let redirect_url = callback_redirect_url(&req, "/hackatime/callback");
-    hackatime_login::handle_login(&req, all_hackatime_scopes(), redirect_url).await
+    hackatime_login::handle_login(&req, all_hackatime_scopes(), redirect_url, true).await
 }
 
 async fn hackatime_callback(req: HttpRequest, query: Query<HackatimeCallbackArgs>) -> HttpResponse {
