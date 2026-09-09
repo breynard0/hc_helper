@@ -75,7 +75,7 @@ pub async fn handle_login(
     req: &HttpRequest,
     scopes: Scopes,
     callback_redirect_url: String,
-    http_only: bool
+    http_only: bool,
 ) -> actix_web::HttpResponse {
     let caller = client_ip(req);
     log::info!("Beginning new Hackatime login attempt from {caller}");
@@ -148,12 +148,16 @@ pub struct CodeRequestResponse {
     pub refresh_token: Option<String>,
 }
 
-pub async fn handle_callback(
+pub async fn handle_callback<F>(
     req: &HttpRequest,
     query: Query<CallbackArgs>,
     callback_redirect_url: String,
     redirect_url_on_success: String,
-) -> actix_web::HttpResponse {
+    push_token_db: Option<F>,
+) -> actix_web::HttpResponse
+where
+    F: AsyncFnOnce(String),
+{
     let caller = client_ip(req);
     log::info!("Hackatime callback initiated from {caller}");
 
@@ -269,6 +273,10 @@ pub async fn handle_callback(
     };
 
     log::info!("Hackatime token fetch successful from {caller}");
+
+    if let Some(f) = push_token_db {
+        f(token.clone()).await;
+    }
 
     let mut token_cookie = Cookie::new(TOKEN_COOKIE, token);
     token_cookie.set_secure(true);

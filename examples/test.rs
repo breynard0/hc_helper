@@ -1417,7 +1417,14 @@ async fn hackatime_login(req: HttpRequest) -> HttpResponse {
 
 async fn hackatime_callback(req: HttpRequest, query: Query<HackatimeCallbackArgs>) -> HttpResponse {
     let redirect_url = callback_redirect_url(&req, "/hackatime/callback");
-    hackatime_login::handle_callback(&req, query, redirect_url, "/hackatime".to_string()).await
+    hackatime_login::handle_callback::<fn(String) -> std::future::Ready<()>>(
+        &req,
+        query,
+        redirect_url,
+        "/hackatime".to_string(),
+        None,
+    )
+    .await
 }
 
 #[actix_web::main]
