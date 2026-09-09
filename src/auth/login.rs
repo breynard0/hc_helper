@@ -169,12 +169,16 @@ pub struct CodeRequestResponse {
 }
 
 /// should be placed at /callback, validates response and saves token cookie
-pub async fn handle_callback(
+pub async fn handle_callback<F>(
     req: &HttpRequest,
     query: Query<CallbackArgs>,
     callback_redirect_url: String,
     redirect_url_on_success: String,
-) -> actix_web::HttpResponse {
+    push_token_db: Option<F>,
+) -> actix_web::HttpResponse
+where
+    F: AsyncFnOnce(String),
+{
     let caller = client_ip(req);
     log::info!("Callback initiated from {caller}");
 
@@ -290,6 +294,10 @@ pub async fn handle_callback(
     };
 
     log::info!("Token fetch successful from {caller}");
+
+    if let Some(f) = push_token_db {
+        f(token.clone()).await;
+    }
 
     let mut token_cookie = Cookie::new(TOKEN_COOKIE, token);
     token_cookie.set_secure(true);
