@@ -100,6 +100,7 @@ fn all_scopes() -> Scopes {
         email: true,
         name: true,
         slack_id: true,
+        phone_number: true,
         verification_status: true,
         basic_info: true,
         addresses: true,

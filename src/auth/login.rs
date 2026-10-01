@@ -56,6 +56,7 @@ pub struct Scopes {
     pub email: bool,
     pub name: bool,
     pub slack_id: bool,
+    pub phone_number: bool,
     pub verification_status: bool,
     pub basic_info: bool,
     pub addresses: bool,
@@ -77,6 +78,9 @@ fn scopes_to_string(scopes: Scopes) -> String {
     }
     if scopes.slack_id {
         out.push_str("slack_id+");
+    }
+    if scopes.phone_number {
+        out.push_str("phone_number+");
     }
     if scopes.verification_status {
         out.push_str("verification_status+");
