@@ -80,7 +80,7 @@ fn scopes_to_string(scopes: Scopes) -> String {
         out.push_str("slack_id+");
     }
     if scopes.phone_number {
-        out.push_str("phone_number+");
+        out.push_str("phone+");
     }
     if scopes.verification_status {
         out.push_str("verification_status+");
