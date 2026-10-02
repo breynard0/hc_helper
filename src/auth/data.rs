@@ -66,12 +66,15 @@ static APP_DATA_CACHE: OnceLock<Mutex<Vec<AuthDataCacheEntry>>> = OnceLock::new(
 const APP_DATA_EXPIRY_MINUTES: u64 = 10;
 
 pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
-    let caller = client_ip(req);
-    log::info!("Getting auth data from {caller}");
+    log::info!("Getting auth data from {}", client_ip(req));
     let token = match get_auth_token_with_handling(req) {
         Some(x) => x,
         None => return Err(anyhow::anyhow!("No auth token")),
     };
+    get_auth_data_with_token(&token).await
+}
+
+pub async fn get_auth_data_with_token(token: &str) -> Result<AuthData> {
     {
         let mut cache = APP_DATA_CACHE
             .get_or_init(|| Mutex::new(vec![]))
@@ -84,24 +87,24 @@ pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
             .collect();
 
         if let Some(cache_hit) = cache.iter().find(|e| e.token == token) {
-            log::info!("Retrieving from HCA cache from {caller}");
+            log::info!("Retrieving from HCA cache");
             return Ok(cache_hit.data.clone());
         }
     }
 
-    log::info!("No HCA cache hit, fetching from {caller}");
+    log::info!("No HCA cache hit, fetching");
     let client = reqwest::Client::new();
     let response = client
         .get("https://auth.hackclub.com/api/v1/me")
-        .bearer_auth(&token)
+        .bearer_auth(token)
         .send()
         .await;
     let auth_data_resp = response?.error_for_status()?;
     let parsed: IdentityResponse = auth_data_resp.json().await?;
-    log::debug!("granted scopes: {:?} from {caller}", parsed.scopes);
+    log::debug!("granted scopes: {:?}", parsed.scopes);
     let auth_data = parsed.identity;
 
-    log::info!("HCA data successfully retrieved from {caller}");
+    log::info!("HCA data successfully retrieved");
 
     {
         let mut cache = APP_DATA_CACHE
@@ -109,7 +112,7 @@ pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
             .lock()
             .unwrap_or_else(|x| x.into_inner());
         cache.push(AuthDataCacheEntry {
-            token,
+            token: token.to_string(),
             data: auth_data.clone(),
             created_time: Instant::now(),
         });

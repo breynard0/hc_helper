@@ -45,14 +45,8 @@ pub struct Project {
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
-struct ProjectNamesResponse {
-    projects: Vec<ProjectName>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-struct ProjectName {
-    name: String,
+struct ProjectsResponse {
+    projects: Vec<Project>,
 }
 
 struct HackatimeUserCacheEntry {
@@ -67,6 +61,12 @@ struct ProjectNamesCacheEntry {
     created_time: Instant,
 }
 
+struct ProjectSummariesCacheEntry {
+    token: String,
+    projects: Vec<Project>,
+    created_time: Instant,
+}
+
 struct ProjectCacheEntry {
     token: String,
     name: String,
@@ -77,9 +77,12 @@ struct ProjectCacheEntry {
 static HACKATIME_USER_CACHE: OnceLock<Mutex<Vec<HackatimeUserCacheEntry>>> = OnceLock::new();
 static HACKATIME_PROJECT_NAMES_CACHE: OnceLock<Mutex<Vec<ProjectNamesCacheEntry>>> =
     OnceLock::new();
+static HACKATIME_PROJECT_SUMMARIES_CACHE: OnceLock<Mutex<Vec<ProjectSummariesCacheEntry>>> =
+    OnceLock::new();
 static HACKATIME_PROJECT_CACHE: OnceLock<Mutex<Vec<ProjectCacheEntry>>> = OnceLock::new();
 
 const CACHE_EXPIRY_MINUTES: u64 = 30;
+const SUMMARIES_CACHE_EXPIRY_SECONDS: u64 = 60;
 /// Without this the API only looks back a year, which truncates `first_heartbeat`.
 const PROJECT_STATS_START: &str = "2015-01-01";
 
@@ -91,9 +94,11 @@ fn token(req: &HttpRequest) -> Result<String> {
 }
 
 pub async fn get_hackatime_user(req: &HttpRequest) -> Result<HackatimeUser> {
-    let caller = client_ip(req);
-    let token = token(req)?;
+    log::info!("Getting Hackatime user from {}", client_ip(req));
+    get_hackatime_user_with_token(&token(req)?).await
+}
 
+pub async fn get_hackatime_user_with_token(token: &str) -> Result<HackatimeUser> {
     {
         let mut cache = HACKATIME_USER_CACHE
             .get_or_init(|| Mutex::new(vec![]))
@@ -103,24 +108,24 @@ pub async fn get_hackatime_user(req: &HttpRequest) -> Result<HackatimeUser> {
         (*cache).retain(|e| {
             e.created_time.elapsed() < std::time::Duration::from_mins(CACHE_EXPIRY_MINUTES) && {
                 if e.user.user_id == 0 {
-                    error!("Rejecting invalid user ID in cache from {caller}");
+                    error!("Rejecting invalid user ID in cache");
                 }
                 e.user.user_id != 0
             }
         });
 
         if let Some(entry) = cache.iter().find(|e| e.token == token) {
-            log::info!("Retrieving from Hackatime user cache from {caller}");
+            log::info!("Retrieving from Hackatime user cache");
             return Ok(entry.user.clone());
         }
     }
 
-    log::info!("No Hackatime user cache hit, fetching from {caller}");
+    log::info!("No Hackatime user cache hit, fetching");
 
     let client = reqwest::Client::new();
     let response = client
         .get("https://hackatime.hackclub.com/api/v1/authenticated/me")
-        .bearer_auth(&token)
+        .bearer_auth(token)
         .send()
         .await;
     let parsed: HackatimeUser = response?.error_for_status()?.json().await?;
@@ -131,7 +136,7 @@ pub async fn get_hackatime_user(req: &HttpRequest) -> Result<HackatimeUser> {
             .lock()
             .unwrap_or_else(|x| x.into_inner());
         cache.push(HackatimeUserCacheEntry {
-            token,
+            token: token.to_string(),
             user: parsed.clone(),
             created_time: Instant::now(),
         });
@@ -140,10 +145,23 @@ pub async fn get_hackatime_user(req: &HttpRequest) -> Result<HackatimeUser> {
     Ok(parsed)
 }
 
-pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
-    let caller = client_ip(req);
-    let token = token(req)?;
+async fn fetch_project_summaries(token: &str) -> Result<Vec<Project>> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://hackatime.hackclub.com/api/v1/authenticated/projects?include_archived=true")
+        .bearer_auth(token)
+        .send()
+        .await;
+    let parsed: ProjectsResponse = response?.error_for_status()?.json().await?;
+    Ok(parsed.projects)
+}
 
+pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
+    log::info!("Getting Hackatime project names from {}", client_ip(req));
+    get_hackatime_projects_with_token(&token(req)?).await
+}
+
+pub async fn get_hackatime_projects_with_token(token: &str) -> Result<Vec<String>> {
     {
         let mut cache = HACKATIME_PROJECT_NAMES_CACHE
             .get_or_init(|| Mutex::new(vec![]))
@@ -155,21 +173,18 @@ pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
         });
 
         if let Some(entry) = cache.iter().find(|e| e.token == token) {
-            log::info!("Retrieving from Hackatime project names cache from {caller}");
+            log::info!("Retrieving from Hackatime project names cache");
             return Ok(entry.names.clone());
         }
     }
 
-    log::info!("No Hackatime project names cache hit, fetching from {caller}");
+    log::info!("No Hackatime project names cache hit, fetching");
 
-    let client = reqwest::Client::new();
-    let response = client
-        .get("https://hackatime.hackclub.com/api/v1/authenticated/projects?include_archived=true")
-        .bearer_auth(&token)
-        .send()
-        .await;
-    let parsed: ProjectNamesResponse = response?.error_for_status()?.json().await?;
-    let names: Vec<String> = parsed.projects.into_iter().map(|p| p.name).collect();
+    let names: Vec<String> = fetch_project_summaries(token)
+        .await?
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
 
     {
         let mut cache = HACKATIME_PROJECT_NAMES_CACHE
@@ -177,7 +192,7 @@ pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
             .lock()
             .unwrap_or_else(|x| x.into_inner());
         cache.push(ProjectNamesCacheEntry {
-            token,
+            token: token.to_string(),
             names: names.clone(),
             created_time: Instant::now(),
         });
@@ -186,10 +201,49 @@ pub async fn get_hackatime_projects(req: &HttpRequest) -> Result<Vec<String>> {
     Ok(names)
 }
 
-pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Project> {
-    let caller = client_ip(req);
-    let token = token(req)?;
+/// Every project with `name`, `total_seconds`, `most_recent_heartbeat` and `languages` filled.
+pub async fn get_hackatime_project_summaries_with_token(token: &str) -> Result<Vec<Project>> {
+    {
+        let mut cache = HACKATIME_PROJECT_SUMMARIES_CACHE
+            .get_or_init(|| Mutex::new(vec![]))
+            .lock()
+            .unwrap_or_else(|x| x.into_inner());
 
+        (*cache).retain(|e| {
+            e.created_time.elapsed() < std::time::Duration::from_secs(SUMMARIES_CACHE_EXPIRY_SECONDS)
+        });
+
+        if let Some(entry) = cache.iter().find(|e| e.token == token) {
+            log::info!("Retrieving from Hackatime project summaries cache");
+            return Ok(entry.projects.clone());
+        }
+    }
+
+    log::info!("No Hackatime project summaries cache hit, fetching");
+
+    let projects = fetch_project_summaries(token).await?;
+
+    {
+        let mut cache = HACKATIME_PROJECT_SUMMARIES_CACHE
+            .get_or_init(|| Mutex::new(vec![]))
+            .lock()
+            .unwrap_or_else(|x| x.into_inner());
+        cache.push(ProjectSummariesCacheEntry {
+            token: token.to_string(),
+            projects: projects.clone(),
+            created_time: Instant::now(),
+        });
+    }
+
+    Ok(projects)
+}
+
+pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Project> {
+    log::info!("Getting Hackatime project from {}", client_ip(req));
+    get_hackatime_project_with_token(&token(req)?, name).await
+}
+
+pub async fn get_hackatime_project_with_token(token: &str, name: &str) -> Result<Project> {
     {
         let mut cache = HACKATIME_PROJECT_CACHE
             .get_or_init(|| Mutex::new(vec![]))
@@ -201,12 +255,12 @@ pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Proj
         });
 
         if let Some(entry) = cache.iter().find(|e| e.token == token && e.name == name) {
-            log::info!("Retrieving from Hackatime project cache from {caller}");
+            log::info!("Retrieving from Hackatime project cache");
             return Ok(entry.project.clone());
         }
     }
 
-    log::info!("No Hackatime project cache hit, fetching from {caller}");
+    log::info!("No Hackatime project cache hit, fetching");
 
     let mut url = reqwest::Url::parse("https://hackatime.hackclub.com/api/v1/users/my/project")?;
     url.path_segments_mut()
@@ -216,7 +270,7 @@ pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Proj
         .append_pair("start_date", PROJECT_STATS_START);
 
     let client = reqwest::Client::new();
-    let response = client.get(url).bearer_auth(&token).send().await;
+    let response = client.get(url).bearer_auth(token).send().await;
     let parsed: Project = response?.error_for_status()?.json().await?;
 
     {
@@ -225,7 +279,7 @@ pub async fn get_hackatime_project(req: &HttpRequest, name: &str) -> Result<Proj
             .lock()
             .unwrap_or_else(|x| x.into_inner());
         cache.push(ProjectCacheEntry {
-            token,
+            token: token.to_string(),
             name: name.to_string(),
             project: parsed.clone(),
             created_time: Instant::now(),
