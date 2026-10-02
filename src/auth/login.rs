@@ -179,6 +179,7 @@ pub async fn handle_callback<F>(
     callback_redirect_url: String,
     redirect_url_on_success: String,
     push_token_db: Option<F>,
+    should_store_auth_token_cookie: bool,
 ) -> actix_web::HttpResponse
 where
     F: AsyncFnOnce(String),
@@ -309,8 +310,13 @@ where
     token_cookie.set_same_site(SameSite::Lax);
     token_cookie.set_expires(OffsetDateTime::now_utc() + Duration::new(60 * 60 * 24 * 5, 0));
 
-    HttpResponse::Found()
-        .cookie(token_cookie)
+    let mut response = HttpResponse::Found()
         .append_header(("Location", redirect_url_on_success.as_str()))
-        .body("Authentication successful, redirecting...")
+        .body("Authentication successful, redirecting...");
+
+    if should_store_auth_token_cookie {
+        let _ = response.add_cookie(&token_cookie);
+    }
+
+    response
 }

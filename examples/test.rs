@@ -1414,6 +1414,7 @@ async fn callback(req: HttpRequest, query: Query<CallbackArgs>) -> HttpResponse 
         redirect_url,
         "/".to_string(),
         None,
+        true,
     )
     .await
 }
@@ -1431,6 +1432,7 @@ async fn hackatime_callback(req: HttpRequest, query: Query<HackatimeCallbackArgs
         redirect_url,
         "/hackatime".to_string(),
         None,
+        true,
     )
     .await
 }

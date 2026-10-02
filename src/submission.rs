@@ -1,6 +1,6 @@
 use actix_web::HttpRequest;
 use log::error;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::Serialize;
 
 use crate::{
     airtable::{AirtableTable, upsert_records},

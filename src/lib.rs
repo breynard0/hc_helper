@@ -1,5 +1,3 @@
-use std::sync::OnceLock;
-
 use actix_web::HttpRequest;
 
 pub mod airtable;
@@ -8,7 +6,7 @@ pub mod hackatime;
 pub mod keys;
 pub mod submission;
 
-static REQWEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+// static REQWEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 // pub fn get_reqwest_client() -> &'static reqwest::Client {
 //     REQWEST_CLIENT.get_or_init(reqwest::Client::new)
