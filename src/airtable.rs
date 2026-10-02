@@ -20,10 +20,9 @@ use tokio::{
     time::sleep,
 };
 
-use crate::keys::airtable_token;
-
 #[derive(Clone)]
 pub struct AirtableTable {
+    pub token: String,
     pub base_id: String,
     pub table_id_or_name: String,
 }
@@ -274,8 +273,8 @@ where
             .headers_mut()
             .append("Content-Type", HeaderValue::from_static("application/json"));
 
-        let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", airtable_token()))
-            .expect("bad airtable token");
+        let mut auth_header_value =
+            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
         auth_header_value.set_sensitive(true);
         request
             .headers_mut()
@@ -288,6 +287,125 @@ where
     }
 
     Ok(())
+}
+
+#[derive(Serialize)]
+struct CreateTopLevel<'a, T> {
+    records: &'a [RecordEntry<T>],
+    typecast: bool,
+}
+
+#[derive(Deserialize)]
+struct CreatedRecord {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct CreatedTopLevel {
+    records: Vec<CreatedRecord>,
+}
+
+/// Returns the ids of the created records, in order.
+pub async fn create_records<T>(table: AirtableTable, records: Vec<T>) -> Result<Vec<String>>
+where
+    T: Serialize,
+{
+    let entries = records
+        .into_iter()
+        .map(|r| RecordEntry { fields: r })
+        .collect::<Vec<_>>();
+
+    info!(
+        "Creating {} record(s) in {}",
+        entries.len(),
+        table.table_id_or_name
+    );
+
+    let url = table.url()?;
+    let mut ids = Vec::new();
+
+    for chunk in entries.chunks(MAX_RECORDS_PER_UPSERT) {
+        let body_parsed = serde_json::to_string(&CreateTopLevel {
+            records: chunk,
+            typecast: true,
+        })?;
+
+        let mut request = Request::new(Method::POST, url.clone());
+
+        request
+            .headers_mut()
+            .append("Content-Type", HeaderValue::from_static("application/json"));
+
+        let mut auth_header_value =
+            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+        auth_header_value.set_sensitive(true);
+        request
+            .headers_mut()
+            .append("Authorization", auth_header_value);
+
+        *request.body_mut() = Some(Body::from(body_parsed));
+
+        let response = enqueue_airtable_request(request, table.clone(), 0).await?;
+        let parsed: CreatedTopLevel = response.json().await?;
+        ids.extend(parsed.records.into_iter().map(|r| r.id));
+    }
+
+    Ok(ids)
+}
+
+const MAX_IDS_PER_GET: usize = 50;
+
+/// Fetches the records with the given ids as (id, fields) pairs. Ids that don't exist are
+/// skipped.
+pub async fn get_records<T>(table: AirtableTable, ids: &[String]) -> Result<Vec<(String, T)>>
+where
+    T: DeserializeOwned,
+{
+    let url = table.url()?;
+    let mut records = Vec::new();
+
+    for chunk in ids.chunks(MAX_IDS_PER_GET) {
+        let formula = format!(
+            "OR({})",
+            chunk
+                .iter()
+                .map(|id| format!("RECORD_ID()='{}'", escape_formula_string(id)))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut offset: Option<String> = None;
+
+        loop {
+            let mut page_url = url.clone();
+            {
+                let mut query = page_url.query_pairs_mut();
+                query.append_pair("filterByFormula", &formula);
+                if let Some(offset) = &offset {
+                    query.append_pair("offset", offset);
+                }
+            }
+
+            let mut request = Request::new(Method::GET, page_url);
+            let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))
+                .expect("bad airtable token");
+            auth_header_value.set_sensitive(true);
+            request
+                .headers_mut()
+                .append("Authorization", auth_header_value);
+
+            let response = enqueue_airtable_request(request, table.clone(), 0).await?;
+            let parsed: FindRecordsTopLevel<T> = response.json().await?;
+
+            records.extend(parsed.records.into_iter().map(|r| (r._id, r.fields)));
+
+            match parsed.offset {
+                Some(next) => offset = Some(next),
+                None => break,
+            }
+        }
+    }
+
+    Ok(records)
 }
 
 #[derive(Deserialize)]
@@ -340,8 +458,8 @@ where
             HeaderValue::from_str("application/json").expect("bad content type"),
         );
 
-        let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", airtable_token()))
-            .expect("bad airtable token");
+        let mut auth_header_value =
+            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
         auth_header_value.set_sensitive(true);
         request
             .headers_mut()
@@ -360,4 +478,52 @@ where
     }
 
     Ok(records)
+}
+
+#[derive(Deserialize)]
+struct SchemaTopLevel {
+    tables: Vec<SchemaTable>,
+}
+
+#[derive(Deserialize)]
+struct SchemaTable {
+    id: String,
+    name: String,
+    fields: Vec<SchemaField>,
+}
+
+#[derive(Deserialize)]
+struct SchemaField {
+    name: String,
+}
+
+pub async fn field_names(table: AirtableTable) -> Result<Vec<String>> {
+    let mut url = Url::parse(BASE_URL)?;
+    url.path_segments_mut()
+        .map_err(|_| anyhow!("{BASE_URL} cannot be a base"))?
+        .extend(["v0", "meta", "bases", &table.base_id, "tables"]);
+
+    let mut request = Request::new(Method::GET, url);
+    let mut auth_header_value =
+        HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+    auth_header_value.set_sensitive(true);
+    request
+        .headers_mut()
+        .append("Authorization", auth_header_value);
+
+    let response = enqueue_airtable_request(request, table.clone(), 0).await?;
+    let parsed: SchemaTopLevel = response.json().await?;
+
+    parsed
+        .tables
+        .into_iter()
+        .find(|t| t.id == table.table_id_or_name || t.name == table.table_id_or_name)
+        .map(|t| t.fields.into_iter().map(|f| f.name).collect())
+        .ok_or_else(|| {
+            anyhow!(
+                "No table {} in base {}",
+                table.table_id_or_name,
+                table.base_id
+            )
+        })
 }

@@ -424,6 +424,7 @@ impl AirtableArgs {
             return Err(table(&[("error", "base id and table are required")]));
         }
         Ok(AirtableTable {
+            token: airtable_token(),
             base_id: self.base.clone(),
             table_id_or_name: self.table.clone(),
         })
@@ -564,6 +565,7 @@ fn launch_find(a: &AirtableArgs) {
     let id = start_attempt("queue");
 
     let target = AirtableTable {
+        token: airtable_token(),
         base_id: a.base.clone(),
         table_id_or_name: a.table.clone(),
     };
@@ -1287,6 +1289,7 @@ impl SubmissionArgs {
             return Err(table(&[("error", "base id and table are required")]));
         }
         Ok(AirtableTable {
+            token: airtable_token(),
             base_id: self.base.clone(),
             table_id_or_name: self.table.clone(),
         })
