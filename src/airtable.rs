@@ -20,6 +20,8 @@ use tokio::{
     time::sleep,
 };
 
+use crate::http::CLIENT;
+
 #[derive(Clone)]
 pub struct AirtableTable {
     pub token: String,
@@ -117,9 +119,8 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
             });
 
             tokio::spawn(async move {
-                let client = reqwest::Client::new();
                 let mut response_result: Result<Response, anyhow::Error> =
-                    client.execute(req.req).await.map_err(|e| e.into());
+                    CLIENT.execute(req.req).await.map_err(|e| e.into());
                 if let Ok(resp) = response_result {
                     response_result = match resp.status() == StatusCode::TOO_MANY_REQUESTS {
                         true => {
@@ -264,8 +265,7 @@ where
             settings: &settings,
             records: chunk,
             typecast: true,
-        })
-        .unwrap();
+        })?;
 
         let mut request = Request::new(Method::PATCH, url.clone());
 
@@ -273,8 +273,7 @@ where
             .headers_mut()
             .append("Content-Type", HeaderValue::from_static("application/json"));
 
-        let mut auth_header_value =
-            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+        let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))?;
         auth_header_value.set_sensitive(true);
         request
             .headers_mut()
@@ -336,8 +335,7 @@ where
             .headers_mut()
             .append("Content-Type", HeaderValue::from_static("application/json"));
 
-        let mut auth_header_value =
-            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+        let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))?;
         auth_header_value.set_sensitive(true);
         request
             .headers_mut()
@@ -386,8 +384,7 @@ where
             }
 
             let mut request = Request::new(Method::GET, page_url);
-            let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))
-                .expect("bad airtable token");
+            let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))?;
             auth_header_value.set_sensitive(true);
             request
                 .headers_mut()
@@ -458,8 +455,7 @@ where
             HeaderValue::from_str("application/json").expect("bad content type"),
         );
 
-        let mut auth_header_value =
-            HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+        let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {}", table.token))?;
         auth_header_value.set_sensitive(true);
         request
             .headers_mut()
@@ -486,36 +482,61 @@ struct SchemaTopLevel {
 }
 
 #[derive(Deserialize)]
-struct SchemaTable {
-    id: String,
-    name: String,
-    fields: Vec<SchemaField>,
+pub struct SchemaTable {
+    pub id: String,
+    pub name: String,
+    pub fields: Vec<SchemaField>,
 }
 
 #[derive(Deserialize)]
-struct SchemaField {
-    name: String,
+pub struct SchemaField {
+    pub name: String,
 }
 
-pub async fn field_names(table: AirtableTable) -> Result<Vec<String>> {
+async fn send_meta_request(
+    method: Method,
+    token: &str,
+    base_id: &str,
+    path: &[&str],
+    body: Option<String>,
+) -> Result<Response> {
     let mut url = Url::parse(BASE_URL)?;
     url.path_segments_mut()
         .map_err(|_| anyhow!("{BASE_URL} cannot be a base"))?
-        .extend(["v0", "meta", "bases", &table.base_id, "tables"]);
+        .extend(["v0", "meta", "bases", base_id, "tables"])
+        .extend(path);
 
-    let mut request = Request::new(Method::GET, url);
-    let mut auth_header_value =
-        HeaderValue::from_str(&format!("Bearer {}", table.token)).expect("bad airtable token");
+    let mut request = Request::new(method, url);
+    let mut auth_header_value = HeaderValue::from_str(&format!("Bearer {token}"))?;
     auth_header_value.set_sensitive(true);
     request
         .headers_mut()
         .append("Authorization", auth_header_value);
 
-    let response = enqueue_airtable_request(request, table.clone(), 0).await?;
-    let parsed: SchemaTopLevel = response.json().await?;
+    if let Some(body) = body {
+        request
+            .headers_mut()
+            .append("Content-Type", HeaderValue::from_static("application/json"));
+        *request.body_mut() = Some(Body::from(body));
+    }
 
-    parsed
-        .tables
+    let table = AirtableTable {
+        token: token.to_string(),
+        base_id: base_id.to_string(),
+        table_id_or_name: String::new(),
+    };
+    enqueue_airtable_request(request, table, 0).await
+}
+
+pub async fn tables(token: &str, base_id: &str) -> Result<Vec<SchemaTable>> {
+    let response = send_meta_request(Method::GET, token, base_id, &[], None).await?;
+    let parsed: SchemaTopLevel = response.json().await?;
+    Ok(parsed.tables)
+}
+
+pub async fn field_names(table: AirtableTable) -> Result<Vec<String>> {
+    tables(&table.token, &table.base_id)
+        .await?
         .into_iter()
         .find(|t| t.id == table.table_id_or_name || t.name == table.table_id_or_name)
         .map(|t| t.fields.into_iter().map(|f| f.name).collect())
@@ -526,4 +547,35 @@ pub async fn field_names(table: AirtableTable) -> Result<Vec<String>> {
                 table.base_id
             )
         })
+}
+
+/// Creates a table from Airtable field definitions. The first field becomes the primary field.
+pub async fn create_table(
+    token: &str,
+    base_id: &str,
+    name: &str,
+    fields: &[serde_json::Value],
+) -> Result<()> {
+    info!("Creating Airtable table {name}");
+    let body = serde_json::json!({ "name": name, "fields": fields }).to_string();
+    send_meta_request(Method::POST, token, base_id, &[], Some(body)).await?;
+    Ok(())
+}
+
+pub async fn create_field(
+    token: &str,
+    base_id: &str,
+    table_id: &str,
+    field: &serde_json::Value,
+) -> Result<()> {
+    info!("Creating Airtable field in {table_id}");
+    send_meta_request(
+        Method::POST,
+        token,
+        base_id,
+        &[table_id, "fields"],
+        Some(field.to_string()),
+    )
+    .await?;
+    Ok(())
 }

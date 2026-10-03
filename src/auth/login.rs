@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{Mutex, OnceLock},
     time::Instant,
 };
@@ -9,22 +10,21 @@ use actix_web::{
         Cookie, SameSite,
         time::{Duration, OffsetDateTime},
     },
+    http::{StatusCode, header::ContentType},
     web::Query,
 };
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     client_ip,
+    http::CLIENT,
     keys::{self, hca_client_id, hca_client_secret},
 };
 
-#[derive(Clone, Copy)]
-struct StateRegistryItem {
-    value: u128,
-    created_time: Instant,
-}
-static STATE_REGISTRY: OnceLock<Mutex<Vec<StateRegistryItem>>> = OnceLock::new();
+static STATE_REGISTRY: OnceLock<Mutex<HashMap<u128, Instant>>> = OnceLock::new();
 const STATE_EXPIRY_TIME_MINUTES: u64 = 5;
+const STATE_REGISTRY_MAX_ENTRIES: usize = 10_000;
 
 pub const TOKEN_COOKIE: &str = "auth-token";
 
@@ -50,6 +50,20 @@ pub fn get_login_redirect_response() -> HttpResponse {
         .finish()
 }
 
+fn sign_in_failed(status: StatusCode) -> HttpResponse {
+    HttpResponse::build(status)
+        .content_type(ContentType::plaintext())
+        .body("Sign-in failed. Please go back and try again.")
+}
+
+fn new_state_cookie(value: String) -> Cookie<'static> {
+    let mut state_cookie = Cookie::new("state", value);
+    state_cookie.set_http_only(true);
+    state_cookie.set_secure(true);
+    state_cookie.set_same_site(SameSite::Lax);
+    state_cookie
+}
+
 pub struct Scopes {
     pub openid: bool,
     pub profile: bool,
@@ -65,31 +79,31 @@ pub struct Scopes {
 fn scopes_to_string(scopes: Scopes) -> String {
     let mut out = String::new();
     if scopes.openid {
-        out.push_str("openid+");
+        out.push_str("openid ");
     }
     if scopes.profile {
-        out.push_str("profile+");
+        out.push_str("profile ");
     }
     if scopes.email {
-        out.push_str("email+");
+        out.push_str("email ");
     }
     if scopes.name {
-        out.push_str("name+");
+        out.push_str("name ");
     }
     if scopes.slack_id {
-        out.push_str("slack_id+");
+        out.push_str("slack_id ");
     }
     if scopes.phone_number {
-        out.push_str("phone+");
+        out.push_str("phone ");
     }
     if scopes.verification_status {
-        out.push_str("verification_status+");
+        out.push_str("verification_status ");
     }
     if scopes.basic_info {
-        out.push_str("basic_info+");
+        out.push_str("basic_info ");
     }
     if scopes.addresses {
-        out.push_str("address+");
+        out.push_str("address ");
     }
     out.pop();
     out
@@ -106,45 +120,49 @@ pub async fn handle_login(
 
     let state_value = rand::random::<u128>();
 
+    let mut auth_url = match Url::parse("https://auth.hackclub.com/oauth/authorize") {
+        Ok(x) => x,
+        Err(e) => {
+            log::error!("Invalid authorize URL: {e}");
+            return HttpResponse::InternalServerError().finish();
+        }
+    };
+    auth_url
+        .query_pairs_mut()
+        .append_pair("client_id", &keys::hca_client_id())
+        .append_pair("redirect_uri", &callback_redirect_url)
+        .append_pair("response_type", "code")
+        .append_pair("scope", &scopes_to_string(scopes))
+        .append_pair("state", &state_value.to_string());
+
     {
         let mut state_registry = STATE_REGISTRY
-            .get_or_init(|| Mutex::new(Vec::new()))
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(|x| x.into_inner());
 
-        state_registry.push(StateRegistryItem {
-            value: state_value,
-            created_time: Instant::now(),
+        state_registry.retain(|_, created_time| {
+            created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60
         });
+
+        if state_registry.len() >= STATE_REGISTRY_MAX_ENTRIES {
+            log::error!("State registry full, refusing login from {caller}");
+            return HttpResponse::ServiceUnavailable()
+                .content_type(ContentType::plaintext())
+                .body("Too many sign-in attempts. Please try again shortly.");
+        }
+
+        state_registry.insert(state_value, Instant::now());
     }
 
-    let auth_url = format!(
-        "https://auth.hackclub.com/oauth/authorize?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}",
-        keys::hca_client_id(),
-        callback_redirect_url,
-        scopes_to_string(scopes),
-        state_value
-    );
-
-    {
-        let mut registry = STATE_REGISTRY
-            .get_or_init(|| Mutex::new(Vec::new()))
-            .lock()
-            .unwrap_or_else(|x| x.into_inner());
-        (*registry).retain(|x| x.created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60);
-    }
-
-    let mut state_cookie = Cookie::new("state", state_value.to_string());
-    state_cookie.set_http_only(true);
-    state_cookie.set_secure(true);
-    state_cookie.set_same_site(SameSite::Lax);
+    let mut state_cookie = new_state_cookie(state_value.to_string());
     state_cookie.set_expires(
         OffsetDateTime::now_utc() + Duration::new(STATE_EXPIRY_TIME_MINUTES as i64 * 60, 0),
     );
 
     actix_web::HttpResponse::Found()
         .cookie(state_cookie)
-        .append_header(("Location", auth_url))
+        .append_header(("Location", auth_url.as_str()))
         .body("redirecting to Hack Club Auth")
 }
 
@@ -184,6 +202,32 @@ pub async fn handle_callback<F>(
 where
     F: AsyncFnOnce(String),
 {
+    let mut response = process_callback(
+        req,
+        query,
+        callback_redirect_url,
+        redirect_url_on_success,
+        push_token_db,
+        should_store_auth_token_cookie,
+    )
+    .await;
+
+    let _ = response.add_removal_cookie(&new_state_cookie(String::new()));
+
+    response
+}
+
+async fn process_callback<F>(
+    req: &HttpRequest,
+    query: Query<CallbackArgs>,
+    callback_redirect_url: String,
+    redirect_url_on_success: String,
+    push_token_db: Option<F>,
+    should_store_auth_token_cookie: bool,
+) -> actix_web::HttpResponse
+where
+    F: AsyncFnOnce(String),
+{
     let caller = client_ip(req);
     log::info!("Callback initiated from {caller}");
 
@@ -194,12 +238,12 @@ where
             Ok(x) => x,
             Err(e) => {
                 log::error!("Invalid state cookie: {e} from {caller}");
-                return get_login_redirect_response();
+                return sign_in_failed(StatusCode::BAD_REQUEST);
             }
         },
         None => {
             log::error!("No state cookie from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_REQUEST);
         }
     };
 
@@ -208,31 +252,28 @@ where
             Ok(x) => x,
             Err(e) => {
                 log::error!("Invalid state in URL: {e} from {caller}");
-                return get_login_redirect_response();
+                return sign_in_failed(StatusCode::BAD_REQUEST);
             }
         },
         None => {
             log::error!("No state in URL from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_REQUEST);
         }
     };
 
-    let state_found;
     {
         let mut registry = STATE_REGISTRY
-            .get_or_init(|| Mutex::new(Vec::new()))
+            .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap_or_else(|x| x.into_inner());
 
-        (*registry).retain(|x| x.created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60);
-
-        state_found = registry.iter().any(|x| x.value == state_from_cookie);
-
-        (*registry).retain(|x| x.value != state_from_cookie);
+        let state_found = registry.remove(&state_from_cookie).is_some_and(|created_time| {
+            created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60
+        });
 
         if !state_found || state_from_cookie != state_from_url {
             log::error!("State mismatch from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_REQUEST);
         }
     }
 
@@ -242,7 +283,7 @@ where
         Some(x) => x,
         None => {
             log::error!("No code variable from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_REQUEST);
         }
     };
 
@@ -254,11 +295,9 @@ where
         grant_type: "authorization_code".to_string(),
     };
 
-    let client = reqwest::Client::new();
-
     log::info!("Sending token request from {caller}");
 
-    let response = match client
+    let response = match CLIENT
         .post("https://auth.hackclub.com/oauth/token")
         .header("Content-Type", "application/json")
         .json(&body)
@@ -268,7 +307,7 @@ where
             log::error!("error: {e} from {caller}");
         }) {
         Ok(x) => x,
-        Err(_) => return get_login_redirect_response(),
+        Err(_) => return sign_in_failed(StatusCode::BAD_GATEWAY),
     };
 
     let parsed: CodeRequestResponse = match {
@@ -276,7 +315,7 @@ where
             Ok(x) => x,
             Err(e) => {
                 log::error!("error: {e} from {caller}");
-                return get_login_redirect_response();
+                return sign_in_failed(StatusCode::BAD_GATEWAY);
             }
         }
     }
@@ -286,7 +325,7 @@ where
         Ok(x) => x,
         Err(e) => {
             log::error!("error: {e} from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_GATEWAY);
         }
     };
 
@@ -294,7 +333,7 @@ where
         Some(x) => x,
         None => {
             log::error!("No access token from {caller}");
-            return get_login_redirect_response();
+            return sign_in_failed(StatusCode::BAD_GATEWAY);
         }
     };
 

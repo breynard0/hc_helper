@@ -7,7 +7,7 @@ use actix_web::HttpRequest;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::{auth::login::get_auth_token_with_handling, client_ip};
+use crate::{auth::login::get_auth_token_with_handling, client_ip, http::CLIENT};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
@@ -93,8 +93,7 @@ pub async fn get_auth_data_with_token(token: &str) -> Result<AuthData> {
     }
 
     log::info!("No HCA cache hit, fetching");
-    let client = reqwest::Client::new();
-    let response = client
+    let response = CLIENT
         .get("https://auth.hackclub.com/api/v1/me")
         .bearer_auth(token)
         .send()
@@ -103,6 +102,9 @@ pub async fn get_auth_data_with_token(token: &str) -> Result<AuthData> {
     let parsed: IdentityResponse = auth_data_resp.json().await?;
     log::debug!("granted scopes: {:?}", parsed.scopes);
     let auth_data = parsed.identity;
+    if auth_data.id.is_empty() {
+        return Err(anyhow::anyhow!("HCA identity has no id"));
+    }
 
     log::info!("HCA data successfully retrieved");
 

@@ -3,14 +3,9 @@ use actix_web::HttpRequest;
 pub mod airtable;
 pub mod auth;
 pub mod hackatime;
+mod http;
 pub mod keys;
 pub mod submission;
-
-// static REQWEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-// pub fn get_reqwest_client() -> &'static reqwest::Client {
-//     REQWEST_CLIENT.get_or_init(reqwest::Client::new)
-// }
 
 /// The client's address, for logging. Trusts `Forwarded`/`X-Forwarded-For`, so
 /// only meaningful behind a proxy that overwrites them.

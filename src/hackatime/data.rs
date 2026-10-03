@@ -8,7 +8,7 @@ use anyhow::Result;
 use log::error;
 use serde::{Deserialize, Serialize};
 
-use crate::{client_ip, hackatime::login::get_hackatime_token_with_handling};
+use crate::{client_ip, hackatime::login::get_hackatime_token_with_handling, http::CLIENT};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -122,13 +122,15 @@ pub async fn get_hackatime_user_with_token(token: &str) -> Result<HackatimeUser>
 
     log::info!("No Hackatime user cache hit, fetching");
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = CLIENT
         .get("https://hackatime.hackclub.com/api/v1/authenticated/me")
         .bearer_auth(token)
         .send()
         .await;
     let parsed: HackatimeUser = response?.error_for_status()?.json().await?;
+    if parsed.user_id == 0 {
+        return Err(anyhow::anyhow!("Hackatime user has no id"));
+    }
 
     {
         let mut cache = HACKATIME_USER_CACHE
@@ -146,8 +148,7 @@ pub async fn get_hackatime_user_with_token(token: &str) -> Result<HackatimeUser>
 }
 
 async fn fetch_project_summaries(token: &str) -> Result<Vec<Project>> {
-    let client = reqwest::Client::new();
-    let response = client
+    let response = CLIENT
         .get("https://hackatime.hackclub.com/api/v1/authenticated/projects?include_archived=true")
         .bearer_auth(token)
         .send()
@@ -269,8 +270,7 @@ pub async fn get_hackatime_project_with_token(token: &str, name: &str) -> Result
     url.query_pairs_mut()
         .append_pair("start_date", PROJECT_STATS_START);
 
-    let client = reqwest::Client::new();
-    let response = client.get(url).bearer_auth(token).send().await;
+    let response = CLIENT.get(url).bearer_auth(token).send().await;
     let parsed: Project = response?.error_for_status()?.json().await?;
 
     {

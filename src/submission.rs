@@ -1,5 +1,5 @@
 use actix_web::HttpRequest;
-use log::error;
+use anyhow::Context;
 use serde::Serialize;
 
 use crate::{
@@ -127,13 +127,18 @@ where
     )
     .await?;
 
-    upsert_records(table, vec![fields], vec!["Code URL".to_string()]).await?;
+    upsert_records(
+        table,
+        vec![fields],
+        vec!["Code URL".to_string(), "Email".to_string()],
+    )
+    .await?;
 
     Ok(())
 }
 
-/// Creates a new submission record every time instead of upserting on Code URL. Returns the
-/// new record's id.
+/// Creates a new submission record every time instead of upserting on Code URL and Email.
+/// Returns the new record's id.
 pub async fn create_unified_with_token<T>(
     auth_token: &str,
     hackatime_token: &str,
@@ -187,47 +192,30 @@ where
     let mut hackatime_justification = String::new();
     for name in hackatime_project_names {
         let name = name.trim();
-        match get_hackatime_project_with_token(hackatime_token, name).await {
-            Ok(project) => {
-                let first_hb = match project.first_heartbeat.as_deref() {
-                    Some(hb) => match hb.split("T").nth(0) {
-                        Some(date) => date,
-                        None => {
-                            error!("No first heartbeat for project: {}", name);
-                            continue;
-                        }
-                    },
-                    None => {
-                        error!("No first heartbeat for project: {}", name);
-                        continue;
-                    }
-                };
+        let project = get_hackatime_project_with_token(hackatime_token, name)
+            .await
+            .with_context(|| format!("Failed to get hackatime project: {name}"))?;
 
-                let last_hb = match project.last_heartbeat.as_deref() {
-                    Some(hb) => match hb.split("T").nth(0) {
-                        Some(date) => date,
-                        None => {
-                            error!("No last heartbeat for project: {}", name);
-                            continue;
-                        }
-                    },
-                    None => {
-                        error!("No last heartbeat for project: {}", name);
-                        continue;
-                    }
-                };
+        let first_hb = project
+            .first_heartbeat
+            .as_deref()
+            .and_then(|hb| hb.split("T").nth(0))
+            .filter(|date| !date.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("No first heartbeat for project: {name}"))?;
 
-                if !hackatime_justification.is_empty() {
-                    hackatime_justification.push_str(", ");
-                }
+        let last_hb = project
+            .last_heartbeat
+            .as_deref()
+            .and_then(|hb| hb.split("T").nth(0))
+            .filter(|date| !date.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("No last heartbeat for project: {name}"))?;
 
-                hackatime_justification
-                    .push_str(format!("{} {}-{}", &project.name, first_hb, last_hb).as_str());
-            }
-            Err(e) => {
-                error!("Failed to get hackatime project: {}", e);
-            }
+        if !hackatime_justification.is_empty() {
+            hackatime_justification.push_str(", ");
         }
+
+        hackatime_justification
+            .push_str(format!("{} {}-{}", &project.name, first_hb, last_hb).as_str());
     }
 
     let address;
