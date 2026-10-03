@@ -1,9 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-    time::Instant,
-};
-
 use actix_web::{
     HttpRequest, HttpResponse,
     cookie::{
@@ -22,9 +16,7 @@ use crate::{
     keys::{self, hca_client_id, hca_client_secret},
 };
 
-static STATE_REGISTRY: OnceLock<Mutex<HashMap<u128, Instant>>> = OnceLock::new();
 const STATE_EXPIRY_TIME_MINUTES: u64 = 5;
-const STATE_REGISTRY_MAX_ENTRIES: usize = 10_000;
 
 pub const TOKEN_COOKIE: &str = "auth-token";
 
@@ -135,26 +127,6 @@ pub async fn handle_login(
         .append_pair("scope", &scopes_to_string(scopes))
         .append_pair("state", &state_value.to_string());
 
-    {
-        let mut state_registry = STATE_REGISTRY
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(|x| x.into_inner());
-
-        state_registry.retain(|_, created_time| {
-            created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60
-        });
-
-        if state_registry.len() >= STATE_REGISTRY_MAX_ENTRIES {
-            log::error!("State registry full, refusing login from {caller}");
-            return HttpResponse::ServiceUnavailable()
-                .content_type(ContentType::plaintext())
-                .body("Too many sign-in attempts. Please try again shortly.");
-        }
-
-        state_registry.insert(state_value, Instant::now());
-    }
-
     let mut state_cookie = new_state_cookie(state_value.to_string());
     state_cookie.set_expires(
         OffsetDateTime::now_utc() + Duration::new(STATE_EXPIRY_TIME_MINUTES as i64 * 60, 0),
@@ -261,20 +233,9 @@ where
         }
     };
 
-    {
-        let mut registry = STATE_REGISTRY
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(|x| x.into_inner());
-
-        let state_found = registry.remove(&state_from_cookie).is_some_and(|created_time| {
-            created_time.elapsed().as_secs() < STATE_EXPIRY_TIME_MINUTES * 60
-        });
-
-        if !state_found || state_from_cookie != state_from_url {
-            log::error!("State mismatch from {caller}");
-            return sign_in_failed(StatusCode::BAD_REQUEST);
-        }
+    if state_from_cookie != state_from_url {
+        log::error!("State mismatch from {caller}");
+        return sign_in_failed(StatusCode::BAD_REQUEST);
     }
 
     log::info!("State matches from {caller}");
