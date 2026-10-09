@@ -86,6 +86,23 @@ const SUMMARIES_CACHE_EXPIRY_SECONDS: u64 = 60;
 /// Without this the API only looks back a year, which truncates `first_heartbeat`.
 const PROJECT_STATS_START: &str = "2015-01-01";
 
+fn forget<T>(cache: &OnceLock<Mutex<Vec<T>>>, matches: impl Fn(&T) -> bool) {
+    if let Some(cache) = cache.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .retain(|e| !matches(e));
+    }
+}
+
+/// Drops every cached response for this token, so the next lookups hit Hackatime.
+pub fn forget_hackatime_token(token: &str) {
+    forget(&HACKATIME_USER_CACHE, |e| e.token == token);
+    forget(&HACKATIME_PROJECT_NAMES_CACHE, |e| e.token == token);
+    forget(&HACKATIME_PROJECT_SUMMARIES_CACHE, |e| e.token == token);
+    forget(&HACKATIME_PROJECT_CACHE, |e| e.token == token);
+}
+
 fn token(req: &HttpRequest) -> Result<String> {
     match get_hackatime_token_with_handling(req) {
         Some(x) => Ok(x),

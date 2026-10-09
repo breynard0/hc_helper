@@ -65,6 +65,16 @@ static APP_DATA_CACHE: OnceLock<Mutex<Vec<AuthDataCacheEntry>>> = OnceLock::new(
 
 const APP_DATA_EXPIRY_MINUTES: u64 = 10;
 
+/// Drops the cached profile for this token, so the next lookup hits HCA.
+pub fn forget_auth_token(token: &str) {
+    if let Some(cache) = APP_DATA_CACHE.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .retain(|e| e.token != token);
+    }
+}
+
 pub async fn get_auth_data(req: &HttpRequest) -> Result<AuthData> {
     log::info!("Getting auth data from {}", client_ip(req));
     let token = match get_auth_token_with_handling(req) {
