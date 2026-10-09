@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-actix-web = "4.15.0"
+actix-web = { version = "4.15.0", default-features = false, features = ["cookies"] }
 anyhow = "1.0.104"
 log = "0.4.34"
 rand = "0.10.2"
