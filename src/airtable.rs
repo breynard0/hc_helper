@@ -491,6 +491,10 @@ pub struct SchemaTable {
 #[derive(Deserialize)]
 pub struct SchemaField {
     pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub options: serde_json::Value,
 }
 
 async fn send_meta_request(
@@ -535,11 +539,15 @@ pub async fn tables(token: &str, base_id: &str) -> Result<Vec<SchemaTable>> {
 }
 
 pub async fn field_names(table: AirtableTable) -> Result<Vec<String>> {
+    Ok(fields(table).await?.into_iter().map(|f| f.name).collect())
+}
+
+pub async fn fields(table: AirtableTable) -> Result<Vec<SchemaField>> {
     tables(&table.token, &table.base_id)
         .await?
         .into_iter()
         .find(|t| t.id == table.table_id_or_name || t.name == table.table_id_or_name)
-        .map(|t| t.fields.into_iter().map(|f| f.name).collect())
+        .map(|t| t.fields)
         .ok_or_else(|| {
             anyhow!(
                 "No table {} in base {}",
