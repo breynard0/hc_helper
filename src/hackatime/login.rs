@@ -19,7 +19,7 @@ use crate::{
 const STATE_EXPIRY_TIME_MINUTES: u64 = 5;
 
 pub const TOKEN_COOKIE: &str = "hackatime-token";
-pub const STATE_COOKIE: &str = "hackatime-state";
+pub const STATE_COOKIE: &str = "__Host-hackatime-state";
 
 pub fn get_hackatime_token_with_handling(req: &HttpRequest) -> Option<String> {
     req.cookie(TOKEN_COOKIE).map(|x| x.value().to_string())
@@ -53,6 +53,7 @@ fn new_state_cookie(value: String, http_only: bool) -> Cookie<'static> {
     state_cookie.set_http_only(http_only);
     state_cookie.set_secure(true);
     state_cookie.set_same_site(SameSite::Lax);
+    state_cookie.set_path("/");
     state_cookie
 }
 

@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     str::FromStr,
     sync::OnceLock,
     time::{Duration, Instant},
@@ -50,6 +51,31 @@ fn escape_formula_field(field: &str) -> String {
 }
 
 static BASE_URL: &str = "https://api.airtable.com";
+
+/// The request failed in a way that leaves open whether Airtable applied it.
+#[derive(Debug)]
+pub struct MaybeSent(anyhow::Error);
+
+impl fmt::Display for MaybeSent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Airtable may have received this request: {:#}", self.0)
+    }
+}
+
+impl std::error::Error for MaybeSent {}
+
+/// Whether a failed request may still have been applied by Airtable.
+pub fn maybe_sent(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<MaybeSent>())
+}
+
+fn sent_error(error: reqwest::Error) -> anyhow::Error {
+    if error.is_connect() || error.is_builder() {
+        error.into()
+    } else {
+        MaybeSent(error.into()).into()
+    }
+}
 
 const MAX_REQUESTS_PER_SECOND: usize = 4;
 
@@ -120,7 +146,7 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
 
             tokio::spawn(async move {
                 let mut response_result: Result<Response, anyhow::Error> =
-                    CLIENT.execute(req.req).await.map_err(|e| e.into());
+                    CLIENT.execute(req.req).await.map_err(sent_error);
                 if let Ok(resp) = response_result {
                     response_result = match resp.status() == StatusCode::TOO_MANY_REQUESTS {
                         true => {
@@ -171,9 +197,15 @@ pub fn spawn_airtable_queue_handler() -> Result<()> {
                         false => match resp.error_for_status_ref() {
                             Ok(_) => Ok(resp),
                             Err(e) => {
+                                let server_error = resp.status().is_server_error();
                                 let body = resp.text().await.unwrap_or_default();
-                                Err(anyhow::Error::new(e)
-                                    .context(format!("Airtable responded: {body}")))
+                                let error = anyhow::Error::new(e)
+                                    .context(format!("Airtable responded: {body}"));
+                                if server_error {
+                                    Err(MaybeSent(error).into())
+                                } else {
+                                    Err(error)
+                                }
                             }
                         },
                     }
@@ -208,7 +240,7 @@ async fn enqueue_airtable_request(
                 .await?;
             match receiver.await {
                 Ok(out) => out,
-                Err(e) => Err(e.into()),
+                Err(e) => Err(MaybeSent(e.into()).into()),
             }
         }
         None => Err(anyhow!("Queue handler uninitialized")),
@@ -344,7 +376,10 @@ where
         *request.body_mut() = Some(Body::from(body_parsed));
 
         let response = enqueue_airtable_request(request, table.clone(), 0).await?;
-        let parsed: CreatedTopLevel = response.json().await?;
+        let parsed: CreatedTopLevel = response
+            .json()
+            .await
+            .map_err(|e| anyhow::Error::from(MaybeSent(e.into())))?;
         ids.extend(parsed.records.into_iter().map(|r| r.id));
     }
 
@@ -356,6 +391,18 @@ const MAX_IDS_PER_GET: usize = 50;
 /// Fetches the records with the given ids as (id, fields) pairs. Ids that don't exist are
 /// skipped.
 pub async fn get_records<T>(table: AirtableTable, ids: &[String]) -> Result<Vec<(String, T)>>
+where
+    T: DeserializeOwned,
+{
+    get_records_with_fields(table, ids, &[]).await
+}
+
+/// Like `get_records`, but only returns the named fields (all of them when `fields` is empty).
+pub async fn get_records_with_fields<T>(
+    table: AirtableTable,
+    ids: &[String],
+    fields: &[&str],
+) -> Result<Vec<(String, T)>>
 where
     T: DeserializeOwned,
 {
@@ -378,6 +425,9 @@ where
             {
                 let mut query = page_url.query_pairs_mut();
                 query.append_pair("filterByFormula", &formula);
+                for field in fields {
+                    query.append_pair("fields[]", field);
+                }
                 if let Some(offset) = &offset {
                     query.append_pair("offset", offset);
                 }

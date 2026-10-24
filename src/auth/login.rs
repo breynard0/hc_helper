@@ -19,6 +19,7 @@ use crate::{
 const STATE_EXPIRY_TIME_MINUTES: u64 = 5;
 
 pub const TOKEN_COOKIE: &str = "auth-token";
+pub const STATE_COOKIE: &str = "__Host-state";
 
 pub fn get_auth_token_with_handling(req: &HttpRequest) -> Option<String> {
     req.cookie(TOKEN_COOKIE).map(|x| x.value().to_string())
@@ -49,10 +50,11 @@ fn sign_in_failed(status: StatusCode) -> HttpResponse {
 }
 
 fn new_state_cookie(value: String) -> Cookie<'static> {
-    let mut state_cookie = Cookie::new("state", value);
+    let mut state_cookie = Cookie::new(STATE_COOKIE, value);
     state_cookie.set_http_only(true);
     state_cookie.set_secure(true);
     state_cookie.set_same_site(SameSite::Lax);
+    state_cookie.set_path("/");
     state_cookie
 }
 
@@ -205,7 +207,7 @@ where
 
     let args = query.into_inner();
 
-    let state_from_cookie = match req.cookie("state") {
+    let state_from_cookie = match req.cookie(STATE_COOKIE) {
         Some(cookie) => match cookie.value().parse::<u128>() {
             Ok(x) => x,
             Err(e) => {
