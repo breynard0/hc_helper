@@ -280,15 +280,42 @@ pub async fn get_hackatime_project_with_token(token: &str, name: &str) -> Result
 
     log::info!("No Hackatime project cache hit, fetching");
 
-    let mut url = reqwest::Url::parse("https://hackatime.hackclub.com/api/v1/users/my/project")?;
-    url.path_segments_mut()
-        .map_err(|_| anyhow::anyhow!("Cannot build Hackatime project URL"))?
-        .push(name);
+    // users/my/project/:name can't route names with dots, projects/details splits names on commas
+    let by_path = name.contains(',');
+    let mut url = reqwest::Url::parse("https://hackatime.hackclub.com/api/v1/users/my")?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("Cannot build Hackatime project URL"))?;
+        if by_path {
+            segments.extend(["project", name]);
+        } else {
+            segments.extend(["projects", "details"]);
+        }
+    }
+    if !by_path {
+        url.query_pairs_mut().append_pair("projects", name);
+    }
     url.query_pairs_mut()
         .append_pair("start_date", PROJECT_STATS_START);
 
-    let response = CLIENT.get(url).bearer_auth(token).send().await;
-    let parsed: Project = response?.error_for_status()?.json().await?;
+    let response = CLIENT
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?;
+    let parsed = if by_path {
+        response.json::<Project>().await?
+    } else {
+        response
+            .json::<ProjectsResponse>()
+            .await?
+            .projects
+            .into_iter()
+            .find(|p| p.name == name)
+            .ok_or_else(|| anyhow::anyhow!("Hackatime project not found: {name}"))?
+    };
 
     {
         let mut cache = HACKATIME_PROJECT_CACHE
